@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# electron-builder output
+release/
+
+# Logs
+npm-debug.log*
+
+# Editor folders
+.vscode/
+.idea/

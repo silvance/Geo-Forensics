@@ -1,7 +1,7 @@
 {
   "name": "refloow-geo-forensics",
   "version": "1.4.0",
-  "description": "Application which allows to tag photos to their geologactions using forensics methods of reading metadata and eexif data of photos.",
+  "description": "Application which allows to tag photos to their geolocations using forensic methods of reading metadata and EXIF data of photos.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

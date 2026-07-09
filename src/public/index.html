@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="sr">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,17 +8,17 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
 
-  <div id="custom-title-bar">
-    <div class="title-buttons" style="-webkit-app-region: no-drag;">
-      <img src="Refloow-Geo-Forensics.png" alt="Refloow Icon" class="title-icon" />
-      <button id="discordBtn" class="title-btn" onclick="window.open('https://discord.com/invite/D8WCtDD', '_blank')">Support</button>
-      <button id="donationBtn" class="title-btn">Donations</button>
+  <body>
+    <div id="custom-title-bar">
+      <div class="title-buttons" style="-webkit-app-region: no-drag;">
+        <img src="Refloow-Geo-Forensics.png" alt="Refloow Icon" class="title-icon" />
+        <button id="discordBtn" class="title-btn" onclick="window.open('https://discord.com/invite/D8WCtDD', '_blank')">Support</button>
+        <button id="donationBtn" class="title-btn">Donations</button>
+      </div>
+
+      <div class="title-drag-area" style="-webkit-app-region: drag;"></div>
     </div>
 
-    <div class="title-drag-area" style="-webkit-app-region: drag;"></div>
-  </div>
-
-  <body>
     <header>
       <div>
         <h1>Refloow GeoForensics</h1>
@@ -32,7 +32,7 @@
     </header>
 
     <div id="controls" style="display: flex; gap: 10px; align-items: center;">
-      <input type="text" id="folderPath" style="flex-grow: 1;" placeholder="Enter full path to the folder with images (example: windows: C:\Users\User\Desktop\Images or linux: C:\Images)" />
+      <input type="text" id="folderPath" style="flex-grow: 1;" placeholder="Enter full path to the folder with images (example: windows: C:\Users\User\Desktop\Images or linux: /home/user/Images)" />
 
       <button id="browseBtn" class="browse-btn" onclick="browseFolder()">Browse Folder</button>
       <button id="analyseBtn" class="analyse-btn" onclick="startScan()">Analyze</button>
@@ -361,9 +361,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             const isVideo = /\.(mp4|mov|webm|ogg|mkv|avi)$/i.test(item.name);
 
             if (isVideo) {
-              return isMap ? `<video src="${mediaSrc}" class="popup-thumbnail" controls muted style="background: #000;"></video>` : `<video src="${mediaSrc}" class="evidence-thumbnail" muted></video>`;
+              return isMap ? `<video src="${mediaSrc}" class="popup-thumbnail" controls muted preload="metadata" style="background: #000;"></video>` : `<video src="${mediaSrc}" class="evidence-thumbnail" muted preload="metadata"></video>`;
             } else {
-              return isMap ? `<img src="${mediaSrc}" class="popup-thumbnail" alt="Preview">` : `<img src="${mediaSrc}" class="evidence-thumbnail" alt="Preview">`;
+              // Lazy-load sidebar thumbnails so large result sets don't fetch every image at once
+              return isMap ? `<img src="${mediaSrc}" class="popup-thumbnail" alt="Preview">` : `<img src="${mediaSrc}" class="evidence-thumbnail" alt="Preview" loading="lazy">`;
             }
           }
 
@@ -397,8 +398,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 ${getPreviewHtml(item, true)}
                 <div style="font-size: 13px;">
                     <b>File:</b> ${escapeHTML(item.name)}<br>
-                    <b>Time:</b> ${item.time}<br>
-                    <b>Device:</b> ${item.camera}
+                    <b>Time:</b> ${escapeHTML(item.time)}<br>
+                    <b>Device:</b> ${escapeHTML(item.camera)}
                 </div>`;
               marker.bindPopup(popupContent);
             } else {
@@ -413,8 +414,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                     ${getPreviewHtml(item, true)}
                     <div style="font-size: 13px;">
                         <b>File:</b> ${escapeHTML(item.name)}<br>
-                        <b>Time:</b> ${item.time}<br>
-                        <b>Device:</b> ${item.camera}
+                        <b>Time:</b> ${escapeHTML(item.time)}<br>
+                        <b>Device:</b> ${escapeHTML(item.camera)}
                     </div>
                   </div>`;
               });
@@ -434,8 +435,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
               div.innerHTML = `
                   <div class="evidence-info">
                       <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
-                      <div class="evidence-meta">📅 ${item.time}</div>
-                      <div class="evidence-meta">📱 ${item.camera}</div>
+                      <div class="evidence-meta">📅 ${escapeHTML(item.time)}</div>
+                      <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
                   </div>
                   ${getPreviewHtml(item, false)}
               `;

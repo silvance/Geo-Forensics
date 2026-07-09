@@ -71,99 +71,151 @@ const fs = require('fs');
 const path = require('path');
 const { exiftool } = require('exiftool-vendored');
 
-async function scanDirectory(dirPath) {
-    let results = [];
+// How many files are handed to ExifTool at once. exiftool-vendored keeps a
+// pool of background processes, so reading files one by one leaves most of
+// that pool idle during large batch scans.
+const SCAN_CONCURRENCY = 4;
 
-    // Normalize the path for the current OS (Linux/Windows)
+// Files discovered by the most recent scan. The /api/image endpoint only
+// serves paths present in this set, so the local HTTP server can never be
+// used to read arbitrary files from disk.
+const servableFiles = new Set();
+
+// Normalize the path for the current OS (Linux/Windows) and validate it
+function resolveScanRoot(dirPath) {
     const normalizedPath = path.resolve(dirPath.trim());
-    
+
     if (!fs.existsSync(normalizedPath)) {
         throw new Error("Folder doesnt exist or path is not valid");
     }
 
-    // Read directory asynchronously
-    const files = await fs.promises.readdir(normalizedPath);
+    return normalizedPath;
+}
 
-    // Use a for...of loop to process files without spiking RAM
-    for (const file of files) {
-        const fullPath = path.join(normalizedPath, file);
-        
+// Shared recursive directory walker used by both the scanner and the file
+// count estimator. Tracks resolved directories so symlink loops can't
+// recurse forever, and silently skips unreadable or restricted entries.
+async function collectFiles(rootPath) {
+    const files = [];
+    const visited = new Set();
+
+    async function walk(dir) {
+        let realDir;
         try {
-            const stat = await fs.promises.stat(fullPath);
-            
-            // If it's a directory, recursively scan it and append the results
-            if (stat.isDirectory()) {
-                const subDirResults = await scanDirectory(fullPath);
-                results = results.concat(subDirResults);
-                continue;
-            }
-
-            // Skip anything else that isn't a file
-            if (!stat.isFile()) continue;
-
-            // Let ExifTool read the file (works for JPG, CR3, MP4, MOV, HEIC, etc.)
-            const tags = await exiftool.read(fullPath);
-
-            // Check if GPS data exists
-            if (tags.GPSLatitude && tags.GPSLongitude) {
-                
-                // Format the Time natively
-                let formattedTime = "Unknown Time";
-                const rawDate = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
-                
-                if (rawDate) {
-                    formattedTime = rawDate.rawValue || rawDate.toString(); 
-                }
-
-                // Push to array
-                results.push({
-                    name: file,
-                    fullPath: fullPath,
-                    lat: tags.GPSLatitude,
-                    lon: tags.GPSLongitude,
-                    time: formattedTime,
-                    camera: tags.Model || tags.Make || "Unknown device"
-                });
-            }
+            realDir = await fs.promises.realpath(dir);
         } catch (err) {
-            // Silently skip unreadable files or restricted access folders
+            return; // Broken link or restricted access
+        }
+
+        // Symlink loop protection: never enter the same real directory twice
+        if (visited.has(realDir)) return;
+        visited.add(realDir);
+
+        let entries;
+        try {
+            entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch (err) {
+            return; // Restricted access folder
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            try {
+                if (entry.isDirectory()) {
+                    await walk(fullPath); // Recurse into subdirectories
+                } else if (entry.isFile()) {
+                    files.push({ name: entry.name, fullPath });
+                } else if (entry.isSymbolicLink()) {
+                    // Follow links to files and folders; the visited set
+                    // above guards against circular links
+                    const stat = await fs.promises.stat(fullPath);
+                    if (stat.isDirectory()) {
+                        await walk(fullPath);
+                    } else if (stat.isFile()) {
+                        files.push({ name: entry.name, fullPath });
+                    }
+                }
+            } catch (err) {
+                // Silently skip unreadable files or restricted access folders
+            }
         }
     }
 
-    return results;
+    await walk(rootPath);
+    return files;
+}
+
+async function scanDirectory(dirPath) {
+    const files = await collectFiles(resolveScanRoot(dirPath));
+
+    // A new scan resets the UI, so files from the previous scan no longer
+    // need to stay servable to the frontend
+    servableFiles.clear();
+
+    // Fill results by index so output keeps directory order no matter
+    // which ExifTool read finishes first
+    const results = new Array(files.length).fill(null);
+    let nextIndex = 0;
+
+    async function worker() {
+        while (nextIndex < files.length) {
+            const index = nextIndex++;
+            const file = files[index];
+
+            try {
+                // Let ExifTool read the file (works for JPG, CR3, MP4, MOV, HEIC, etc.)
+                const tags = await exiftool.read(file.fullPath);
+
+                // Check if GPS data exists. 0 is a valid coordinate on the
+                // equator / prime meridian, so only reject missing values
+                if (tags.GPSLatitude != null && tags.GPSLongitude != null) {
+
+                    // Format the Time natively
+                    let formattedTime = "Unknown Time";
+                    const rawDate = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
+
+                    if (rawDate) {
+                        formattedTime = rawDate.rawValue || rawDate.toString();
+                    }
+
+                    servableFiles.add(file.fullPath);
+                    results[index] = {
+                        name: file.name,
+                        fullPath: file.fullPath,
+                        lat: tags.GPSLatitude,
+                        lon: tags.GPSLongitude,
+                        time: formattedTime,
+                        camera: tags.Model || tags.Make || "Unknown device"
+                    };
+                }
+            } catch (err) {
+                // Silently skip files ExifTool can't parse
+            }
+        }
+    }
+
+    // Run a small pool of workers so ExifTool processes files in parallel
+    const workers = [];
+    for (let i = 0; i < Math.min(SCAN_CONCURRENCY, files.length); i++) {
+        workers.push(worker());
+    }
+    await Promise.all(workers);
+
+    return results.filter(Boolean);
 }
 
 async function countFiles(dirPath) {
-    let count = 0;
-    const normalizedPath = path.resolve(dirPath.trim());
-    
-    if (!fs.existsSync(normalizedPath)) {
-        throw new Error("Folder doesnt exist or path is not valid");
-    }
-
-    // Fast recursive directory walker
-    async function walk(dir) {
-        const files = await fs.promises.readdir(dir);
-        for (const file of files) {
-            const fullPath = path.join(dir, file);
-            try {
-                const stat = await fs.promises.stat(fullPath);
-                if (stat.isDirectory()) {
-                    await walk(fullPath); // Recurse into subdirectories
-                } else if (stat.isFile()) {
-                    count++;
-                }
-            } catch (err) {
-                // Silently skip unreadable files
-            }
-        }
-    }
-
-    await walk(normalizedPath);
-    return count;
+    const files = await collectFiles(resolveScanRoot(dirPath));
+    return files.length;
 }
 
-module.exports = { scanDirectory, countFiles };
+// Used by the /api/image endpoint to make sure only files discovered by
+// the current scan can ever be served over HTTP
+function isServableFile(filePath) {
+    return servableFiles.has(path.resolve(filePath));
+}
+
+module.exports = { scanDirectory, countFiles, isServableFile };
 
 /* Refloow Geo Forensics
  * Copyright (C) 2026  Veljko Vuckovic (Refloow) <legal@refloow.com>

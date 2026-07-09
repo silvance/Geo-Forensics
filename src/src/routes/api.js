@@ -67,9 +67,10 @@ const REFLOOW_BRAND_IDENTITY = {
  */
 
 const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const router = express.Router();
-const { scanDirectory } = require('../utils/scanner');
+const { scanDirectory, isServableFile } = require('../utils/scanner');
 
 
 router.post('/scan', async (req, res) => { 
@@ -89,10 +90,11 @@ router.post('/scan', async (req, res) => {
 // Endpoint to safely serve local images to the frontend
 router.get('/image', (req, res) => {
     const imagePath = req.query.path;
-    
-    // Basic security check to ensure it exists
-    if (imagePath && fs.existsSync(imagePath)) {
-        res.sendFile(imagePath);
+
+    // Only serve files discovered by the current scan, so this endpoint
+    // can never be used to read arbitrary files from disk
+    if (typeof imagePath === 'string' && isServableFile(imagePath) && fs.existsSync(imagePath)) {
+        res.sendFile(path.resolve(imagePath));
     } else {
         res.status(404).send('Image not found');
     }
