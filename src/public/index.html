@@ -36,8 +36,12 @@
       <input type="text" id="folderPath" style="flex-grow: 1;" placeholder="Enter full path to the folder with images (example: windows: C:\Users\User\Desktop\Images or linux: /home/user/Images)" />
 
       <button id="browseBtn" class="browse-btn" onclick="browseFolder()">Browse Folder</button>
-      <button id="analyseBtn" class="analyse-btn" onclick="startScan()">Analyze</button>
+      <button id="analyseBtn" class="analyse-btn" onclick="handleAnalyzeClick()">Analyze</button>
       <button id="exportBtn" class="browse-btn" onclick="openExportModal()" disabled title="Run a scan first">Export</button>
+    </div>
+
+    <div id="scanProgressContainer">
+      <div id="scanProgressBar"></div>
     </div>
 
     <div id="main-area" style="position: relative;">
@@ -243,256 +247,328 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let polylineLayer = null;
       let isScanning = false;
       let lastScanData = []; // Chronologically sorted results of the last scan, used by the export feature
+      let currentScanId = null;
+      let scanEventSource = null;
 
-      async function startScan() {
-        if (isScanning) return; // Ignore clicks if already scanning
-        isScanning = true;
+      // The Analyze button doubles as a Cancel button while a scan runs
+      function handleAnalyzeClick() {
+        if (isScanning) {
+          cancelScan();
+        } else {
+          startScan();
+        }
+      }
 
-        const analyseBtn = document.getElementById("analyseBtn");
-        const pathInputEl = document.getElementById("folderPath");
+      async function cancelScan() {
+        if (!currentScanId) return;
+
+        document.getElementById("analyseBtn").innerText = "Cancelling...";
 
         try {
-          const pathInput = document.getElementById("folderPath").value;
-          const statusMsg = document.getElementById("status-msg");
-          const listDiv = document.getElementById("results-list");
-
-          if (!pathInput) {
-            showCustomAlert("Please enter a path to your evidence folder.", "Input Required");
-            return;
-          }
-
-          pathInputEl.classList.add("scanning-active");
-
-          analyseBtn.innerText = "Scanning...";
-          analyseBtn.style.opacity = "0.7";
-          analyseBtn.style.cursor = "wait";
-
-          statusMsg.innerText = "Scaning in progress...";
-          listDiv.innerHTML = "";
-
-          markers.forEach((m) => map.removeLayer(m));
-          markers = [];
-
-          if (polylineLayer) {
-            map.removeLayer(polylineLayer);
-            polylineLayer = null;
-          }
-
-          const response = await fetch("/api/scan", {
+          // The server aborts the scan and still delivers whatever was
+          // found so far through the open event stream, flagged as partial
+          await fetch("/api/scan-cancel", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({folderPath: pathInput}),
+            body: JSON.stringify({scanId: currentScanId}),
           });
-
-          const result = await response.json();
-
-          if (!result.success) {
-            statusMsg.innerText = "Scan failed.";
-            lastScanData = [];
-            document.getElementById("exportBtn").disabled = true;
-            showCustomAlert(result.error, "Scan Error");
-            return;
-          }
-
-          let data = result.data;
-          const stats = result.stats;
-
-          listDiv.innerHTML = "";
-
-          if (data.length === 0) {
-            statusMsg.innerText = stats ? `GPS data not found (${stats.totalFiles} files scanned)` : "GPS data not found";
-            lastScanData = [];
-            document.getElementById("exportBtn").disabled = true;
-            showToast("Scan complete: No GPS data found in this directory.", true);
-            return;
-          }
-
-          // CHRONOLOGICAL SORTING ENGINE
-          data.sort((a, b) => {
-            const parseDate = (timeStr) => {
-              if (!timeStr || timeStr === "Unknown Time") return 0;
-              const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
-              const timestamp = Date.parse(formatted);
-              return isNaN(timestamp) ? 0 : timestamp;
-            };
-            return parseDate(a.time) - parseDate(b.time);
-          });
-
-          // Completeness summary so the investigator knows how much of the
-          // evidence set was actually examined
-          let statusText = "Found " + data.length + " evidence.";
-          if (stats) {
-            statusText += ` Scanned ${stats.totalFiles} files`;
-            if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
-            statusText += ".";
-          }
-          statusMsg.innerText = statusText;
-          showToast(`Success: ${data.length} evidence files located!`, false);
-
-          // Keep the sorted results for the export feature
-          lastScanData = data;
-          const exportBtn = document.getElementById("exportBtn");
-          exportBtn.disabled = false;
-          exportBtn.title = "Export scan results";
-
-          let latlngs = [];
-
-          // LOADING PREFERENCES
-          const showPreviews = localStorage.getItem("imagePreviews") === "true";
-          const showLines = localStorage.getItem("timelineLines") !== "false";
-          const showNumbers = localStorage.getItem("timelineNumbers") !== "false";
-
-          // RENDERING MARKERS
-
-          const distanceThreshold = 0.0001; // Approx 10-15 meters threshold
-          let groupedData = [];
-
-          data.forEach((item, index) => {
-            item.originalIndex = index;
-
-            let foundGroup = groupedData.find((group) => {
-              return Math.abs(group.lat - item.lat) < distanceThreshold && Math.abs(group.lon - item.lon) < distanceThreshold;
-            });
-
-            if (foundGroup) {
-              foundGroup.items.push(item);
-            } else {
-              groupedData.push({
-                lat: item.lat,
-                lon: item.lon,
-                items: [item],
-              });
-            }
-          });
-
-          const yellowIcon = L.divIcon({
-            className: "custom-svg-pin",
-            html: `<svg viewBox="0 0 24 40" width="25" height="41" style="filter: drop-shadow(2px 4px 4px rgba(0,0,0,0.5));">
-                     <path d="M12 0C5.373 0 0 5.373 0 12c0 9.6 12 28 12 28s12-18.4 12-28C24 5.373 18.627 0 12 0z" fill="#fbbf24" stroke="#b45309" stroke-width="1"/>
-                     <circle cx="12" cy="12" r="4.5" fill="#ffffff" />
-                   </svg>`,
-            iconSize: [25, 41],
-            iconAnchor: [12, 41],
-            popupAnchor: [1, -34],
-          });
-
-          function getPreviewHtml(item, isMap) {
-            if (!showPreviews) return "";
-            const encodedPath = encodeURIComponent(item.fullPath);
-            const mediaSrc = `/api/image?path=${encodedPath}`;
-            const isVideo = /\.(mp4|mov|webm|ogg|mkv|avi)$/i.test(item.name);
-
-            if (isVideo) {
-              return isMap ? `<video src="${mediaSrc}" class="popup-thumbnail" controls muted preload="metadata" style="background: #000;"></video>` : `<video src="${mediaSrc}" class="evidence-thumbnail" muted preload="metadata"></video>`;
-            } else {
-              // Lazy-load sidebar thumbnails so large result sets don't fetch every image at once
-              return isMap ? `<img src="${mediaSrc}" class="popup-thumbnail" alt="Preview">` : `<img src="${mediaSrc}" class="evidence-thumbnail" alt="Preview" loading="lazy">`;
-            }
-          }
-
-          groupedData.forEach((group) => {
-            let marker;
-            const isCluster = group.items.length > 1;
-
-            // standard blue pin for singles, custom yellow SVG pin for clusters
-            marker = isCluster ? L.marker([group.lat, group.lon], {icon: yellowIcon}).addTo(map) : L.marker([group.lat, group.lon]).addTo(map);
-
-            if (showNumbers) {
-              let tooltipContent = (group.items[0].originalIndex + 1).toString();
-
-              // If it's a cluster, append the label beneath it
-              if (isCluster) {
-                tooltipContent += `<div class="cluster-files-label">${group.items.length} Files</div>`;
-              }
-
-              marker.bindTooltip(tooltipContent, {
-                permanent: true,
-                direction: "right",
-                className: "timeline-number-tooltip",
-                offset: [-15, -2],
-              });
-            }
-
-            // --- POPUP LOGIC ---
-            if (!isCluster) {
-              const item = group.items[0];
-              const popupContent = `
-                ${getPreviewHtml(item, true)}
-                <div style="font-size: 13px;">
-                    <b>File:</b> ${escapeHTML(item.name)}<br>
-                    <b>Time:</b> ${escapeHTML(item.time)}<br>
-                    <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
-                </div>`;
-              marker.bindPopup(popupContent);
-            } else {
-              // a scrollable popup modal for clustered items
-              let popupContent = `<div class="scrollable-group-popup">
-                <h3 style="margin-top:0; margin-bottom: 15px; color:#e94560;">${group.items.length} Files Found Here</h3>`;
-
-              group.items.forEach((item) => {
-                popupContent += `
-                  <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #444;">
-                    <span style="font-size: 11px; color:#aaa; font-weight: bold;">Chronological File #${item.originalIndex + 1}</span><br>
-                    ${getPreviewHtml(item, true)}
-                    <div style="font-size: 13px;">
-                        <b>File:</b> ${escapeHTML(item.name)}<br>
-                        <b>Time:</b> ${escapeHTML(item.time)}<br>
-                        <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
-                    </div>
-                  </div>`;
-              });
-              popupContent += `</div>`;
-
-              marker.bindPopup(popupContent, {className: "group-popup-container", minWidth: 220});
-            }
-
-            markers.push(marker);
-
-            // Sidebar Elements
-            group.items.forEach((item) => {
-              latlngs.push([item.lat, item.lon]);
-
-              const div = document.createElement("div");
-              div.className = "evidence-item";
-              div.innerHTML = `
-                  <div class="evidence-info">
-                      <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
-                      <div class="evidence-meta">📅 ${escapeHTML(item.time)}</div>
-                      <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
-                  </div>
-                  ${getPreviewHtml(item, false)}
-              `;
-
-              div.onclick = () => {
-                map.flyTo([group.lat, group.lon], 18);
-                marker.openPopup();
-              };
-              listDiv.appendChild(div);
-            });
-          });
-
-          // RENDER TIMELINE PATH
-          if (latlngs.length > 0) {
-            const bounds = L.latLngBounds(latlngs);
-            map.fitBounds(bounds);
-
-            // Only draw the red polyline if the setting is enabled and there are 2+ points
-            if (showLines && latlngs.length > 1) {
-              polylineLayer = L.polyline(latlngs, {color: "#e94560", weight: 3}).addTo(map);
-            }
-          }
         } catch (e) {
-          console.error(e);
+          // If the cancel request itself failed, drop the stream client-side
+          if (scanEventSource) scanEventSource.close();
+          finishScanUI();
+          document.getElementById("status-msg").innerText = "Scan cancelled.";
+        }
+      }
+
+      function updateScanProgress(processed, total) {
+        document.getElementById("scanProgressContainer").style.display = "block";
+        document.getElementById("scanProgressBar").style.width = total > 0 ? (processed / total) * 100 + "%" : "0%";
+        document.getElementById("status-msg").innerText = `Scanning ${processed} / ${total} files...`;
+      }
+
+      // Resets all busy-state UI once a scan ends, for any reason
+      function finishScanUI() {
+        isScanning = false;
+        currentScanId = null;
+        scanEventSource = null;
+
+        document.getElementById("folderPath").classList.remove("scanning-active");
+        document.getElementById("scanProgressContainer").style.display = "none";
+        document.getElementById("scanProgressBar").style.width = "0%";
+
+        const analyseBtn = document.getElementById("analyseBtn");
+        analyseBtn.innerText = "Analyze";
+        analyseBtn.classList.remove("cancel-mode");
+      }
+
+      function startScan() {
+        if (isScanning) return;
+
+        const pathInput = document.getElementById("folderPath").value;
+        const statusMsg = document.getElementById("status-msg");
+
+        if (!pathInput) {
+          showCustomAlert("Please enter a path to your evidence folder.", "Input Required");
+          return;
+        }
+
+        isScanning = true;
+
+        document.getElementById("folderPath").classList.add("scanning-active");
+        const analyseBtn = document.getElementById("analyseBtn");
+        analyseBtn.innerText = "Cancel Scan";
+        analyseBtn.classList.add("cancel-mode");
+
+        statusMsg.innerText = "Scanning in progress...";
+        document.getElementById("results-list").innerHTML = "";
+
+        markers.forEach((m) => map.removeLayer(m));
+        markers = [];
+
+        if (polylineLayer) {
+          map.removeLayer(polylineLayer);
+          polylineLayer = null;
+        }
+
+        // Live progress over Server-Sent Events instead of one blocking request
+        currentScanId = "scan-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+        const es = new EventSource(`/api/scan-stream?path=${encodeURIComponent(pathInput)}&id=${currentScanId}`);
+        scanEventSource = es;
+
+        es.addEventListener("progress", (e) => {
+          const p = JSON.parse(e.data);
+          updateScanProgress(p.processed, p.total);
+        });
+
+        es.addEventListener("done", (e) => {
+          es.close(); // Close first so EventSource doesn't auto-reconnect and rescan
+          const payload = JSON.parse(e.data);
+          finishScanUI();
+          try {
+            renderScanResults(payload.data, payload.stats);
+          } catch (err) {
+            console.error(err);
+            statusMsg.innerText = "There was an server error.";
+          }
+        });
+
+        es.addEventListener("scan-error", (e) => {
+          es.close();
+          const payload = JSON.parse(e.data);
+          finishScanUI();
+          statusMsg.innerText = "Scan failed.";
+          lastScanData = [];
+          document.getElementById("exportBtn").disabled = true;
+          showCustomAlert(payload.error, "Scan Error");
+        });
+
+        // Fires on transport failure (e.g. the backend went away mid-scan)
+        es.onerror = () => {
+          if (!isScanning) return; // Normal stream shutdown after done/scan-error
+          es.close();
+          finishScanUI();
           statusMsg.innerText = "There was an server error.";
-        } finally {
-          // Unlock UI absolutely no matter what happens (success or error)
-          isScanning = false;
+        };
+      }
 
-          pathInputEl.classList.remove("scanning-active");
+      function renderScanResults(data, stats) {
+        const statusMsg = document.getElementById("status-msg");
+        const listDiv = document.getElementById("results-list");
 
-          analyseBtn.innerText = "Analyze";
-          analyseBtn.style.opacity = "1";
-          analyseBtn.style.cursor = "pointer";
+        listDiv.innerHTML = "";
+
+        if (data.length === 0) {
+          if (stats && stats.aborted) {
+            statusMsg.innerText = `Scan cancelled (${stats.processed} of ${stats.totalFiles} files examined, no GPS data)`;
+            showToast("Scan cancelled: no GPS data found before stopping.", true);
+          } else {
+            statusMsg.innerText = stats ? `GPS data not found (${stats.totalFiles} files scanned)` : "GPS data not found";
+            showToast("Scan complete: No GPS data found in this directory.", true);
+          }
+          lastScanData = [];
+          document.getElementById("exportBtn").disabled = true;
+          return;
+        }
+
+        // CHRONOLOGICAL SORTING ENGINE
+        data.sort((a, b) => {
+          const parseDate = (timeStr) => {
+            if (!timeStr || timeStr === "Unknown Time") return 0;
+            const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
+            const timestamp = Date.parse(formatted);
+            return isNaN(timestamp) ? 0 : timestamp;
+          };
+          return parseDate(a.time) - parseDate(b.time);
+        });
+
+        // Completeness summary so the investigator knows how much of the
+        // evidence set was actually examined
+        let statusText = "Found " + data.length + " evidence.";
+        if (stats && stats.aborted) {
+          statusText = `Scan cancelled — partial results: ${data.length} evidence from ${stats.processed} of ${stats.totalFiles} files.`;
+        } else if (stats) {
+          statusText += ` Scanned ${stats.totalFiles} files`;
+          if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
+          statusText += ".";
+        }
+        statusMsg.innerText = statusText;
+        if (stats && stats.aborted) {
+          showToast(`Scan cancelled: showing ${data.length} partial results.`, true);
+        } else {
+          showToast(`Success: ${data.length} evidence files located!`, false);
+        }
+
+        // Keep the sorted results for the export feature
+        lastScanData = data;
+        const exportBtn = document.getElementById("exportBtn");
+        exportBtn.disabled = false;
+        exportBtn.title = "Export scan results";
+
+        let latlngs = [];
+
+        // LOADING PREFERENCES
+        const showPreviews = localStorage.getItem("imagePreviews") === "true";
+        const showLines = localStorage.getItem("timelineLines") !== "false";
+        const showNumbers = localStorage.getItem("timelineNumbers") !== "false";
+
+        // RENDERING MARKERS
+
+        const distanceThreshold = 0.0001; // Approx 10-15 meters threshold
+        let groupedData = [];
+
+        data.forEach((item, index) => {
+          item.originalIndex = index;
+
+          let foundGroup = groupedData.find((group) => {
+            return Math.abs(group.lat - item.lat) < distanceThreshold && Math.abs(group.lon - item.lon) < distanceThreshold;
+          });
+
+          if (foundGroup) {
+            foundGroup.items.push(item);
+          } else {
+            groupedData.push({
+              lat: item.lat,
+              lon: item.lon,
+              items: [item],
+            });
+          }
+        });
+
+        const yellowIcon = L.divIcon({
+          className: "custom-svg-pin",
+          html: `<svg viewBox="0 0 24 40" width="25" height="41" style="filter: drop-shadow(2px 4px 4px rgba(0,0,0,0.5));">
+                   <path d="M12 0C5.373 0 0 5.373 0 12c0 9.6 12 28 12 28s12-18.4 12-28C24 5.373 18.627 0 12 0z" fill="#fbbf24" stroke="#b45309" stroke-width="1"/>
+                   <circle cx="12" cy="12" r="4.5" fill="#ffffff" />
+                 </svg>`,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+        });
+
+        function getPreviewHtml(item, isMap) {
+          if (!showPreviews) return "";
+          const encodedPath = encodeURIComponent(item.fullPath);
+          const mediaSrc = `/api/image?path=${encodedPath}`;
+          const isVideo = /\.(mp4|mov|webm|ogg|mkv|avi)$/i.test(item.name);
+
+          if (isVideo) {
+            return isMap ? `<video src="${mediaSrc}" class="popup-thumbnail" controls muted preload="metadata" style="background: #000;"></video>` : `<video src="${mediaSrc}" class="evidence-thumbnail" muted preload="metadata"></video>`;
+          } else {
+            // Lazy-load sidebar thumbnails so large result sets don't fetch every image at once
+            return isMap ? `<img src="${mediaSrc}" class="popup-thumbnail" alt="Preview">` : `<img src="${mediaSrc}" class="evidence-thumbnail" alt="Preview" loading="lazy">`;
+          }
+        }
+
+        groupedData.forEach((group) => {
+          let marker;
+          const isCluster = group.items.length > 1;
+
+          // standard blue pin for singles, custom yellow SVG pin for clusters
+          marker = isCluster ? L.marker([group.lat, group.lon], {icon: yellowIcon}).addTo(map) : L.marker([group.lat, group.lon]).addTo(map);
+
+          if (showNumbers) {
+            let tooltipContent = (group.items[0].originalIndex + 1).toString();
+
+            // If it's a cluster, append the label beneath it
+            if (isCluster) {
+              tooltipContent += `<div class="cluster-files-label">${group.items.length} Files</div>`;
+            }
+
+            marker.bindTooltip(tooltipContent, {
+              permanent: true,
+              direction: "right",
+              className: "timeline-number-tooltip",
+              offset: [-15, -2],
+            });
+          }
+
+          // --- POPUP LOGIC ---
+          if (!isCluster) {
+            const item = group.items[0];
+            const popupContent = `
+              ${getPreviewHtml(item, true)}
+              <div style="font-size: 13px;">
+                  <b>File:</b> ${escapeHTML(item.name)}<br>
+                  <b>Time:</b> ${escapeHTML(item.time)}<br>
+                  <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
+              </div>`;
+            marker.bindPopup(popupContent);
+          } else {
+            // a scrollable popup modal for clustered items
+            let popupContent = `<div class="scrollable-group-popup">
+              <h3 style="margin-top:0; margin-bottom: 15px; color:#e94560;">${group.items.length} Files Found Here</h3>`;
+
+            group.items.forEach((item) => {
+              popupContent += `
+                <div style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #444;">
+                  <span style="font-size: 11px; color:#aaa; font-weight: bold;">Chronological File #${item.originalIndex + 1}</span><br>
+                  ${getPreviewHtml(item, true)}
+                  <div style="font-size: 13px;">
+                      <b>File:</b> ${escapeHTML(item.name)}<br>
+                      <b>Time:</b> ${escapeHTML(item.time)}<br>
+                      <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
+                  </div>
+                </div>`;
+            });
+            popupContent += `</div>`;
+
+            marker.bindPopup(popupContent, {className: "group-popup-container", minWidth: 220});
+          }
+
+          markers.push(marker);
+
+          // Sidebar Elements
+          group.items.forEach((item) => {
+            latlngs.push([item.lat, item.lon]);
+
+            const div = document.createElement("div");
+            div.className = "evidence-item";
+            div.innerHTML = `
+                <div class="evidence-info">
+                    <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
+                    <div class="evidence-meta">📅 ${escapeHTML(item.time)}</div>
+                    <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
+                </div>
+                ${getPreviewHtml(item, false)}
+            `;
+
+            div.onclick = () => {
+              map.flyTo([group.lat, group.lon], 18);
+              marker.openPopup();
+            };
+            listDiv.appendChild(div);
+          });
+        });
+
+        // RENDER TIMELINE PATH
+        if (latlngs.length > 0) {
+          const bounds = L.latLngBounds(latlngs);
+          map.fitBounds(bounds);
+
+          // Only draw the red polyline if the setting is enabled and there are 2+ points
+          if (showLines && latlngs.length > 1) {
+            polylineLayer = L.polyline(latlngs, {color: "#e94560", weight: 3}).addTo(map);
+          }
         }
       }
 
