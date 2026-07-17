@@ -784,10 +784,148 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           });
           kml += `</Document>\n</kml>\n`;
           triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
+        } else if (format === "report") {
+          triggerDownload(exportFilename("html"), "text/html", buildCaseReport(data));
         }
 
         document.getElementById("exportModal").style.display = "none";
-        showToast(`Export downloaded (${format.toUpperCase()}).`);
+        showToast(`Export downloaded (${format === "report" ? "Case Report" : format.toUpperCase()}).`);
+      }
+
+      // --- Self-contained HTML Case Report ---
+
+      // Plots the evidence coordinates as an inline SVG (equirectangular,
+      // relative scale) so the report needs no map tiles or internet access
+      function buildReportMapSvg(data) {
+        const W = 760, H = 420, PAD = 40;
+
+        let minLat = Math.min(...data.map((i) => i.lat));
+        let maxLat = Math.max(...data.map((i) => i.lat));
+        let minLon = Math.min(...data.map((i) => i.lon));
+        let maxLon = Math.max(...data.map((i) => i.lon));
+
+        // Give single points / identical coordinates a visible plot area
+        if (maxLat - minLat < 0.0005) { maxLat += 0.00025; minLat -= 0.00025; }
+        if (maxLon - minLon < 0.0005) { maxLon += 0.00025; minLon -= 0.00025; }
+
+        const x = (lon) => (PAD + ((lon - minLon) / (maxLon - minLon)) * (W - 2 * PAD)).toFixed(1);
+        const y = (lat) => (H - PAD - ((lat - minLat) / (maxLat - minLat)) * (H - 2 * PAD)).toFixed(1);
+
+        let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Evidence coordinate plot">`;
+        svg += `<rect width="${W}" height="${H}" fill="#f8fafc" stroke="#cbd5e1"/>`;
+
+        // Chronological movement path
+        if (data.length > 1) {
+          const points = data.map((i) => `${x(i.lon)},${y(i.lat)}`).join(" ");
+          svg += `<polyline points="${points}" fill="none" stroke="#e94560" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+        }
+
+        // Numbered evidence points
+        data.forEach((item) => {
+          const cx = x(item.lon), cy = y(item.lat);
+          svg += `<circle cx="${cx}" cy="${cy}" r="9" fill="#1f4068" stroke="#ffffff" stroke-width="1.5"/>`;
+          svg += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="9" font-family="sans-serif" fill="#ffffff">${item.originalIndex + 1}</text>`;
+        });
+
+        // Corner coordinate labels so the plot is interpretable
+        svg += `<text x="${PAD}" y="${H - 8}" font-size="10" font-family="sans-serif" fill="#64748b">${minLat.toFixed(5)}, ${minLon.toFixed(5)}</text>`;
+        svg += `<text x="${W - PAD}" y="16" text-anchor="end" font-size="10" font-family="sans-serif" fill="#64748b">${maxLat.toFixed(5)}, ${maxLon.toFixed(5)}</text>`;
+        svg += `</svg>`;
+        return svg;
+      }
+
+      function buildCaseReport(data) {
+        const esc = escapeHTML;
+        const stats = fullScanStats;
+        const generated = new Date().toLocaleString();
+        const folder = document.getElementById("folderPath").value;
+
+        // Describe any active filters so a partial view is never mistaken
+        // for the full evidence set
+        const device = document.getElementById("filterDevice").value;
+        const from = document.getElementById("filterFrom").value;
+        const to = document.getElementById("filterTo").value;
+        const filters = [];
+        if (device && device !== "__all__") filters.push(`device = ${device}`);
+        if (from) filters.push(`from ${from}`);
+        if (to) filters.push(`to ${to}`);
+        const viewDesc = filters.length > 0
+          ? `Filtered: ${data.length} of ${fullScanData.length} evidence files shown (${filters.join(", ")})`
+          : `All ${data.length} evidence files from the scan`;
+
+        const scanStatus = stats && stats.aborted
+          ? `CANCELLED — partial scan (${stats.processed} of ${stats.totalFiles} files examined)`
+          : "Complete";
+
+        const rows = data.map((item) => `
+      <tr>
+        <td>${item.originalIndex + 1}</td>
+        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div></td>
+        <td>${esc(item.time)}</td>
+        <td>${esc(item.camera)}</td>
+        <td class="num">${item.lat}</td>
+        <td class="num">${item.lon}</td>
+        <td class="num">${item.alt != null ? item.alt.toFixed(1) + " m" : "—"}</td>
+        <td><a href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(item.lat)}&amp;mlon=${encodeURIComponent(item.lon)}#map=16/${encodeURIComponent(item.lat)}/${encodeURIComponent(item.lon)}">map</a></td>
+      </tr>`).join("");
+
+        const metaRow = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
+        let metaRows = metaRow("Generated", esc(generated)) + metaRow("Evidence folder", esc(folder)) + metaRow("Scan status", esc(scanStatus)) + metaRow("View", esc(viewDesc));
+        if (stats) {
+          metaRows += metaRow("Files examined", `${stats.processed} of ${stats.totalFiles}`);
+          metaRows += metaRow("With location data", String(stats.withLocation));
+          metaRows += metaRow("Without location data", String(stats.noLocation));
+          metaRows += metaRow("Unreadable", String(stats.unreadable));
+        }
+
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GeoForensics Case Report</title>
+<style>
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1e293b; margin: 40px auto; max-width: 820px; padding: 0 20px; }
+  h1 { font-size: 1.6em; border-bottom: 3px solid #e94560; padding-bottom: 8px; }
+  h2 { font-size: 1.15em; margin-top: 32px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; }
+  .meta th { width: 180px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .path { color: #64748b; font-size: 11px; word-break: break-all; }
+  .caption { color: #64748b; font-size: 12px; margin-top: 6px; }
+  svg { width: 100%; height: auto; }
+  footer { margin-top: 40px; color: #64748b; font-size: 12px; border-top: 1px solid #cbd5e1; padding-top: 10px; }
+  @media print {
+    body { margin: 0; max-width: none; }
+    tr { page-break-inside: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+  <h1>&#128205; GeoForensics Case Report</h1>
+
+  <h2>Scan Summary</h2>
+  <table class="meta">${metaRows}
+  </table>
+
+  <h2>Coordinate Plot</h2>
+  ${buildReportMapSvg(data)}
+  <div class="caption">Relative plot of evidence coordinates in chronological order (equirectangular projection, not to scale with any base map). Numbers match the evidence table below. The dashed line traces chronological movement.</div>
+
+  <h2>Evidence (chronological)</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>File</th><th>Timestamp</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Link</th></tr>
+    </thead>
+    <tbody>${rows}
+    </tbody>
+  </table>
+
+  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; the map links require internet access.</footer>
+</body>
+</html>`;
       }
 
       // Filter control wiring
@@ -856,7 +994,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('csv')">CSV &mdash; spreadsheets & reports</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('geojson')">GeoJSON &mdash; GIS software (QGIS, ArcGIS)</button>
-        <button class="browse-btn" style="width: 100%;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
+        <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
+        <button class="browse-btn" style="width: 100%;" onclick="exportResults('report')">Case Report &mdash; self-contained HTML (print to PDF)</button>
       </div>
     </div>
 
