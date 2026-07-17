@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loading Refloow GeoForensics</title>
+    <title>Loading GeoForensics</title>
     <!-- I used css inside of the file instead in the styles.css here becuase i want this to be portable and likely used in other electron apps -->
     <style>
         body {
@@ -25,9 +25,11 @@
             flex-direction: column;
             align-items: center;
         }
-        .logo-img {
-            width: 240px;
-            height: auto;
+        .logo-text {
+            font-size: 2.2rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #e94560;
             animation: pulse 1.2s infinite;
             margin-bottom: 50px;
             will-change: transform, opacity;
@@ -67,7 +69,7 @@
 </head>
 <body>
     <div class="splash-container">
-        <img src="../img/RefloowLogo.png" alt="Refloow Logo" class="logo-img">
+        <div class="logo-text">📍 GeoForensics</div>
         <div class="loading-text">loading...</div>
         
         <div class="loader-bar">

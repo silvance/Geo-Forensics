@@ -1,82 +1,39 @@
-# Contributing to Refloow Geo Forensics
+# Contributing to GeoForensics
 
-First off, thank you for considering contributing to Refloow Geo Forensics! Open source thrives on community collaboration, and your interest in improving this tool helps the entire OSINT and digital forensics community.
-
-Whether you are fixing a bug, proposing a new feature, or improving our documentation, this guide will help you understand our development process and standards.
-
----
-
-## ⚖️ Intellectual Property & Copyright Assignment (CLA)
-
-To protect the integrity of the project, ensure it remains a reliable tool for investigators, and allow us to legally defend the codebase, Refloow Geo Forensics requires all contributors to assign the copyright of their contributions to the project owner (Veljko Vuckovic / Refloow). 
-
-**Why do we do this?**
-By submitting a Pull Request, you agree to transfer the copyright of your contributed code to Refloow. This is a standard legal practice used by major open-source organizations (like the Free Software Foundation, Canonical, and SAP). It prevents the codebase from becoming fragmented across dozens of copyright holders, allowing us to manage the license effectively and protect the software's future. 
-
-**The License Back:**
-Don't worry—you still own your ideas. By signing the agreement, Refloow grants you a non-exclusive, perpetual license back to your own code. You are free to use, modify, and distribute the code you wrote however you see fit.
-
-🔗 **[Read the full Contributor License Agreement (CLA) here](https://gist.github.com/Refloow/5ad996a927f8dda94911b29c84bb51e1)**
-
-*Note: You do not need to sign anything manually. Upon opening your first Pull Request, an automated bot (CLA Assistant) will prompt you to review and sign the agreement directly via your GitHub account.*
-
----
+Thanks for your interest in improving GeoForensics! Bug reports, feature requests, and pull requests are all welcome.
 
 ## 🛠️ Local Development Setup
 
-To get the project running locally on your machine for development:
-
-1. **Prerequisites:** Ensure you have [Node.js](https://nodejs.org/) installed. Official development version is v20.10.0
-2. **Clone your fork:** `git clone https://github.com/Refloow/Refloow-Geo-Forensics.git`
-3. **Navigate to the directory:** `cd Refloow-Geo-Forensics/src`
+1. **Prerequisites:** [Node.js](https://nodejs.org/) v20.10.0 or newer.
+2. **Clone your fork:** `git clone https://github.com/<your-username>/Geo-Forensics.git`
+3. **Navigate to the app directory:** `cd Geo-Forensics/src`
 4. **Install dependencies:** `npm install`
 5. **Run the application:** `npm start`
-
----
+6. **Run the tests:** `npm test`
 
 ## 💻 Code Standards & Expectations
 
-To keep the codebase clean and maintainable, please adhere to the following guidelines:
-* **UI/UX Consistency:** We take pride in our native-feeling interface. Ensure any new buttons, modals, or toggles fully support both **Dark Mode** and **Light Mode** CSS classes.
-* **Non-Blocking Logic:** The forensic scanning engine (Node.js backend) must remain asynchronous. Do not introduce synchronous file-reading operations that could freeze the Electron main thread during large directory scans.
-* **Comment Your Code:** Leave clear, concise comments explaining the *why* behind complex logic, especially when dealing with EXIF data extraction or map rendering.
+* **Tests:** The scanning engine and local API are covered by the test suite in `src/test/`. Please keep `npm test` green and add tests for new backend behavior. Tests run automatically on every pull request.
+* **UI/UX consistency:** Any new buttons, modals, or controls must fully support both **dark mode** and **light mode** (see the `body.light-theme` rules in `styles.css`).
+* **Non-blocking logic:** The scanning backend must remain asynchronous. Do not introduce synchronous file reads that could freeze the app during large directory scans.
+* **Security:** The embedded server must stay bound to `127.0.0.1`, and endpoints that touch the filesystem must never serve paths outside the current scan's allowlist. Escape all metadata (it comes from untrusted files) before inserting it into the DOM.
+* **Comments:** Explain the *why* behind non-obvious logic, especially around EXIF handling and map rendering.
 
----
+## 🚀 How to Contribute
 
-### 🚀 How to Contribute: Step-by-Step
-
-Ready to write some code? Follow this standard GitHub flow:
-
-1. **Fork the repository**  
-   Fork the official Refloow Geo Forensics repository to your GitHub account.
-
-2. **Create a new branch**  
-   Create a feature branch from `main` for your work:
-
-    ```git checkout -b feature/your-amazing-feature```
-
-   Use `bugfix/` or `docs/` prefixes if applicable.
-
-3. **Make changes and commit**  
-   Stage and commit your changes with a clear, descriptive message:
-
-    ```git add .```
-    ```git commit -m "Add support for analyzing .CR3 RAW image formats"```
-
-4. **Push your branch**  
-   Push the branch to your fork:
-`
-    ```git push origin feature/your-amazing-feature```
-
-5. **Open a Pull Request**  
-   Open a Pull Request against the `main` branch of the official Refloow Geo Forensics repository. In your PR description include:
+1. **Fork the repository** and create a feature branch from `main`:
+   ```bash
+   git checkout -b feature/your-improvement
+   ```
+2. **Make your changes** and commit with a clear, descriptive message.
+3. **Push** the branch to your fork and **open a pull request** against `main`, describing:
    - **What** you changed
    - **Why** the change is needed
-   - **How** to test the change
-   - Any relevant screenshots or sample data
+   - **How** to test it
+4. **Engage in review** — respond to comments and update the PR as needed.
 
-6. **Sign the CLA**  
-   Sign the Contributor License Agreement when prompted by the bot on your PR.
+## 📜 Licensing of Contributions
 
-7. **Engage in the review process**  
-   Respond to review comments, make requested changes, and update your PR as needed. A maintainer will review your code and may suggest tweaks before merging.
+GeoForensics is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. By submitting a pull request you agree that your contribution is licensed under AGPL-3.0. You retain the copyright to your work — there is no copyright assignment or CLA.
+
+GeoForensics is a fork of [Refloow Geo Forensics](https://github.com/Refloow/Refloow-Geo-Forensics) by Veljko Vuckovic; the original copyright notices in the source files must be preserved.
