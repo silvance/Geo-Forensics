@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Refloow GeoForensics</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <!-- Leaflet is served by the local backend from the bundled npm package, so the app works offline -->
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
 
@@ -36,6 +37,7 @@
 
       <button id="browseBtn" class="browse-btn" onclick="browseFolder()">Browse Folder</button>
       <button id="analyseBtn" class="analyse-btn" onclick="startScan()">Analyze</button>
+      <button id="exportBtn" class="browse-btn" onclick="openExportModal()" disabled title="Run a scan first">Export</button>
     </div>
 
     <div id="main-area" style="position: relative;">
@@ -57,7 +59,7 @@
 
     <div id="toast" class="toast-hidden">Address copied to clipboard!</div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="vendor/leaflet/leaflet.js"></script>
 
     <script>
 // Variable to hold our typing timer
@@ -240,6 +242,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let markers = [];
       let polylineLayer = null;
       let isScanning = false;
+      let lastScanData = []; // Chronologically sorted results of the last scan, used by the export feature
 
       async function startScan() {
         if (isScanning) return; // Ignore clicks if already scanning
@@ -285,16 +288,21 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
           if (!result.success) {
             statusMsg.innerText = "Scan failed.";
+            lastScanData = [];
+            document.getElementById("exportBtn").disabled = true;
             showCustomAlert(result.error, "Scan Error");
             return;
           }
 
           let data = result.data;
+          const stats = result.stats;
 
           listDiv.innerHTML = "";
 
           if (data.length === 0) {
-            statusMsg.innerText = "GPS data not found";
+            statusMsg.innerText = stats ? `GPS data not found (${stats.totalFiles} files scanned)` : "GPS data not found";
+            lastScanData = [];
+            document.getElementById("exportBtn").disabled = true;
             showToast("Scan complete: No GPS data found in this directory.", true);
             return;
           }
@@ -310,8 +318,22 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             return parseDate(a.time) - parseDate(b.time);
           });
 
-          statusMsg.innerText = "Found " + data.length + " evidence.";
+          // Completeness summary so the investigator knows how much of the
+          // evidence set was actually examined
+          let statusText = "Found " + data.length + " evidence.";
+          if (stats) {
+            statusText += ` Scanned ${stats.totalFiles} files`;
+            if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
+            statusText += ".";
+          }
+          statusMsg.innerText = statusText;
           showToast(`Success: ${data.length} evidence files located!`, false);
+
+          // Keep the sorted results for the export feature
+          lastScanData = data;
+          const exportBtn = document.getElementById("exportBtn");
+          exportBtn.disabled = false;
+          exportBtn.title = "Export scan results";
 
           let latlngs = [];
 
@@ -399,7 +421,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 <div style="font-size: 13px;">
                     <b>File:</b> ${escapeHTML(item.name)}<br>
                     <b>Time:</b> ${escapeHTML(item.time)}<br>
-                    <b>Device:</b> ${escapeHTML(item.camera)}
+                    <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
                 </div>`;
               marker.bindPopup(popupContent);
             } else {
@@ -415,7 +437,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                     <div style="font-size: 13px;">
                         <b>File:</b> ${escapeHTML(item.name)}<br>
                         <b>Time:</b> ${escapeHTML(item.time)}<br>
-                        <b>Device:</b> ${escapeHTML(item.camera)}
+                        <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
                     </div>
                   </div>`;
               });
@@ -513,6 +535,76 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         toastTimeout = setTimeout(() => {
           toast.classList.remove("show");
         }, 2500);
+      }
+
+      // --- Evidence Export (CSV / GeoJSON / KML) ---
+
+      function openExportModal() {
+        if (lastScanData.length === 0) {
+          showCustomAlert("Run a scan first — there are no results to export yet.", "No Data");
+          return;
+        }
+        document.getElementById("exportCount").innerText = `${lastScanData.length} evidence files from the current scan, in chronological order.`;
+        document.getElementById("exportModal").style.display = "block";
+      }
+
+      function triggerDownload(filename, mimeType, content) {
+        const blob = new Blob([content], {type: mimeType});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Give the browser a moment to start the download before revoking
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function exportFilename(ext) {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, "0");
+        return `geo-forensics-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
+      }
+
+      function exportResults(format) {
+        const data = lastScanData;
+        if (data.length === 0) return;
+
+        if (format === "csv") {
+          // Quote every text field so paths and device names with commas survive
+          const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+          const rows = ["#,File,Full Path,Latitude,Longitude,Altitude (m),Timestamp,Device"];
+          data.forEach((item, i) => {
+            rows.push([i + 1, esc(item.name), esc(item.fullPath), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.camera)].join(","));
+          });
+          triggerDownload(exportFilename("csv"), "text/csv", rows.join("\r\n"));
+        } else if (format === "geojson") {
+          const collection = {
+            type: "FeatureCollection",
+            features: data.map((item, i) => ({
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                // GeoJSON is [longitude, latitude, (altitude)]
+                coordinates: item.alt != null ? [item.lon, item.lat, item.alt] : [item.lon, item.lat],
+              },
+              properties: {index: i + 1, name: item.name, path: item.fullPath, time: item.time, device: item.camera},
+            })),
+          };
+          triggerDownload(exportFilename("geojson"), "application/geo+json", JSON.stringify(collection, null, 2));
+        } else if (format === "kml") {
+          const escXml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+          let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>Refloow Geo Forensics Export</name>\n`;
+          data.forEach((item, i) => {
+            kml += `<Placemark>\n<name>${i + 1}. ${escXml(item.name)}</name>\n<description>Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}</description>\n<Point><coordinates>${item.lon},${item.lat}${item.alt != null ? "," + item.alt : ""}</coordinates></Point>\n</Placemark>\n`;
+          });
+          kml += `</Document>\n</kml>\n`;
+          triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
+        }
+
+        document.getElementById("exportModal").style.display = "none";
+        showToast(`Export downloaded (${format.toUpperCase()}).`);
       }
     </script>
 
@@ -625,6 +717,18 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           <span class="crypto-label">Bitcoin Cash (BCH)</span>
           <input type="text" class="crypto-input" value="qqe99z466a8wdknxvxkcw60p72ddhkg2lvfuh9jqzz" readonly onclick="copyToClipboard(this)" />
         </div>
+      </div>
+    </div>
+
+    <div id="exportModal" class="modal">
+      <div class="modal-content" style="max-width: 420px;">
+        <span id="closeExportBtn" class="close-btn">&times;</span>
+        <h2>Export Evidence</h2>
+        <p id="exportCount" style="font-size: 0.95em; color: #a0a0a0; margin-bottom: 20px;"></p>
+
+        <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('csv')">CSV &mdash; spreadsheets & reports</button>
+        <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('geojson')">GeoJSON &mdash; GIS software (QGIS, ArcGIS)</button>
+        <button class="browse-btn" style="width: 100%;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
       </div>
     </div>
 
@@ -883,6 +987,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         creditsModal.style.display = "none";
       };
 
+      // Close Export
+      const exportModal = document.getElementById("exportModal");
+      document.getElementById("closeExportBtn").onclick = function () {
+        exportModal.style.display = "none";
+      };
+
       // --- Custom Alert Logic ---
       const alertModal = document.getElementById("customAlertModal");
       const alertMessageEl = document.getElementById("customAlertMessage");
@@ -908,6 +1018,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         if (event.target == settingsModal) settingsModal.style.display = "none";
         if (event.target == donationModal) donationModal.style.display = "none";
         if (event.target == creditsModal) creditsModal.style.display = "none";
+        if (event.target == exportModal) exportModal.style.display = "none";
       };
 
       // --- Native Folder Browser Logic ---

@@ -157,6 +157,11 @@ async function scanDirectory(dirPath) {
     const results = new Array(files.length).fill(null);
     let nextIndex = 0;
 
+    // Completeness counters: an investigator needs to know how much of the
+    // evidence set was actually examined, not just what matched
+    let noLocation = 0;
+    let unreadable = 0;
+
     async function worker() {
         while (nextIndex < files.length) {
             const index = nextIndex++;
@@ -165,6 +170,13 @@ async function scanDirectory(dirPath) {
             try {
                 // Let ExifTool read the file (works for JPG, CR3, MP4, MOV, HEIC, etc.)
                 const tags = await exiftool.read(file.fullPath);
+
+                // ExifTool reports fatal problems (empty file, unknown
+                // format) as an Error tag instead of throwing
+                if (tags.Error) {
+                    unreadable++;
+                    continue;
+                }
 
                 // Check if GPS data exists. 0 is a valid coordinate on the
                 // equator / prime meridian, so only reject missing values
@@ -184,12 +196,16 @@ async function scanDirectory(dirPath) {
                         fullPath: file.fullPath,
                         lat: tags.GPSLatitude,
                         lon: tags.GPSLongitude,
+                        alt: typeof tags.GPSAltitude === 'number' ? tags.GPSAltitude : null,
                         time: formattedTime,
                         camera: tags.Model || tags.Make || "Unknown device"
                     };
+                } else {
+                    noLocation++;
                 }
             } catch (err) {
-                // Silently skip files ExifTool can't parse
+                // Count files ExifTool can't parse instead of hiding them
+                unreadable++;
             }
         }
     }
@@ -201,7 +217,17 @@ async function scanDirectory(dirPath) {
     }
     await Promise.all(workers);
 
-    return results.filter(Boolean);
+    const found = results.filter(Boolean);
+
+    return {
+        results: found,
+        stats: {
+            totalFiles: files.length,
+            withLocation: found.length,
+            noLocation: noLocation,
+            unreadable: unreadable
+        }
+    };
 }
 
 async function countFiles(dirPath) {

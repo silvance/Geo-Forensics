@@ -674,6 +674,21 @@ body.light-theme .crypto-input:focus {
     color: #ffffff;
 }
 
+/* Export button is disabled until a scan has produced results */
+.browse-btn:disabled,
+.browse-btn:disabled:hover {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background-color: #1f2b4c;
+    color: #d0d0d0;
+}
+
+.light-theme .browse-btn:disabled,
+.light-theme .browse-btn:disabled:hover {
+    background-color: #e2e8f0;
+    color: #1e293b;
+}
+
 .analyse-btn {
     background-color: #e94560; 
     color: #ffffff;
