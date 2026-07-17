@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Refloow GeoForensics</title>
+    <title>GeoForensics</title>
     <!-- Leaflet is served by the local backend from the bundled npm package, so the app works offline -->
     <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="styles.css" />
@@ -12,9 +12,8 @@
   <body>
     <div id="custom-title-bar">
       <div class="title-buttons" style="-webkit-app-region: no-drag;">
-        <img src="Refloow-Geo-Forensics.png" alt="Refloow Icon" class="title-icon" />
-        <button id="discordBtn" class="title-btn" onclick="window.open('https://discord.com/invite/D8WCtDD', '_blank')">Support</button>
-        <button id="donationBtn" class="title-btn">Donations</button>
+        <span class="title-icon" style="font-size: 14px; line-height: 18px;">📍</span>
+        <button id="supportLinkBtn" class="title-btn" onclick="window.open('https://github.com/silvance/Geo-Forensics/issues', '_blank')">Support</button>
       </div>
 
       <div class="title-drag-area" style="-webkit-app-region: drag;"></div>
@@ -22,7 +21,7 @@
 
     <header>
       <div>
-        <h1>Refloow GeoForensics</h1>
+        <h1>GeoForensics</h1>
         <span class="subtitle">TOOL FOR GEOLOCATION OF EVIDENCE</span>
       </div>
       <div style="display: flex; align-items: center; gap: 15px;">
@@ -52,6 +51,16 @@
         <div id="estimateFileCount">-- files</div>
       </div>
 
+      <div id="filterPanel" style="display: none;">
+        <div class="filter-title">Filter Evidence</div>
+        <select id="filterDevice" title="Filter by device"></select>
+        <div class="filter-dates">
+          <input type="date" id="filterFrom" title="From date" />
+          <input type="date" id="filterTo" title="To date" />
+        </div>
+        <button id="clearFiltersBtn" type="button">Clear filters</button>
+      </div>
+
       <div style="text-align: center; color: #888; margin-top: 5px; margin-bottom: 15px;" id="status-msg">Waiting for scan...</div>
       <div id="results-list"></div>
     </div>
@@ -61,7 +70,7 @@
       <div id="map"></div>
     </div>
 
-    <div id="toast" class="toast-hidden">Address copied to clipboard!</div>
+    <div id="toast" class="toast-hidden"></div>
 
     <script src="vendor/leaflet/leaflet.js"></script>
 
@@ -246,7 +255,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let markers = [];
       let polylineLayer = null;
       let isScanning = false;
-      let lastScanData = []; // Chronologically sorted results of the last scan, used by the export feature
+      let lastScanData = []; // Currently displayed (possibly filtered) results, used by the export feature
+      let fullScanData = []; // All chronologically sorted results of the last scan
+      let fullScanStats = null;
       let currentScanId = null;
       let scanEventSource = null;
 
@@ -386,43 +397,154 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             showToast("Scan complete: No GPS data found in this directory.", true);
           }
           lastScanData = [];
+          fullScanData = [];
+          fullScanStats = stats || null;
           document.getElementById("exportBtn").disabled = true;
+          document.getElementById("filterPanel").style.display = "none";
           return;
         }
 
         // CHRONOLOGICAL SORTING ENGINE
-        data.sort((a, b) => {
-          const parseDate = (timeStr) => {
-            if (!timeStr || timeStr === "Unknown Time") return 0;
-            const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
-            const timestamp = Date.parse(formatted);
-            return isNaN(timestamp) ? 0 : timestamp;
-          };
-          return parseDate(a.time) - parseDate(b.time);
+        data.forEach((item) => {
+          item._ts = parseExifTimestamp(item.time);
+        });
+        data.sort((a, b) => a._ts - b._ts);
+
+        // Assign stable chronological numbers once per scan, so evidence
+        // numbering keeps its meaning while filters are applied
+        data.forEach((item, index) => {
+          item.originalIndex = index;
         });
 
-        // Completeness summary so the investigator knows how much of the
-        // evidence set was actually examined
-        let statusText = "Found " + data.length + " evidence.";
-        if (stats && stats.aborted) {
-          statusText = `Scan cancelled — partial results: ${data.length} evidence from ${stats.processed} of ${stats.totalFiles} files.`;
-        } else if (stats) {
-          statusText += ` Scanned ${stats.totalFiles} files`;
-          if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
-          statusText += ".";
-        }
-        statusMsg.innerText = statusText;
+        fullScanData = data;
+        fullScanStats = stats || null;
+
         if (stats && stats.aborted) {
           showToast(`Scan cancelled: showing ${data.length} partial results.`, true);
         } else {
           showToast(`Success: ${data.length} evidence files located!`, false);
         }
 
-        // Keep the sorted results for the export feature
+        setupFilterPanel(data);
+        applyFilters();
+      }
+
+      // EXIF timestamps look like "2026:01:15 10:30:00"; returns 0 when unknown
+      function parseExifTimestamp(timeStr) {
+        if (!timeStr || timeStr === "Unknown Time") return 0;
+        const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
+        const timestamp = Date.parse(formatted);
+        return isNaN(timestamp) ? 0 : timestamp;
+      }
+
+      // --- Evidence Filtering (device & date range) ---
+
+      function setupFilterPanel(data) {
+        const deviceSelect = document.getElementById("filterDevice");
+        deviceSelect.innerHTML = "";
+
+        const allOption = document.createElement("option");
+        allOption.value = "__all__";
+        allOption.textContent = `All devices (${data.length})`;
+        deviceSelect.appendChild(allOption);
+
+        // One dropdown entry per device seen in this scan
+        const deviceCounts = new Map();
+        data.forEach((item) => deviceCounts.set(item.camera, (deviceCounts.get(item.camera) || 0) + 1));
+        [...deviceCounts.keys()].sort().forEach((device) => {
+          const option = document.createElement("option");
+          option.value = device;
+          option.textContent = `${device} (${deviceCounts.get(device)})`;
+          deviceSelect.appendChild(option);
+        });
+
+        // Constrain the date pickers to the range covered by the evidence
+        const stamps = data.filter((item) => item._ts > 0).map((item) => item._ts);
+        const fromInput = document.getElementById("filterFrom");
+        const toInput = document.getElementById("filterTo");
+        fromInput.value = "";
+        toInput.value = "";
+        if (stamps.length > 0) {
+          const toDateStr = (ts) => {
+            const d = new Date(ts);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+          };
+          fromInput.min = toInput.min = toDateStr(Math.min(...stamps));
+          fromInput.max = toInput.max = toDateStr(Math.max(...stamps));
+        }
+
+        document.getElementById("filterPanel").style.display = "block";
+      }
+
+      function clearFilters() {
+        document.getElementById("filterDevice").value = "__all__";
+        document.getElementById("filterFrom").value = "";
+        document.getElementById("filterTo").value = "";
+        applyFilters();
+      }
+
+      function applyFilters() {
+        const device = document.getElementById("filterDevice").value;
+        const from = document.getElementById("filterFrom").value;
+        const to = document.getElementById("filterTo").value;
+
+        let data = fullScanData;
+        if (device !== "__all__") data = data.filter((item) => item.camera === device);
+
+        // Items without a readable timestamp can't be placed in a date
+        // range, so they are excluded while a date filter is active
+        if (from) {
+          const fromTs = new Date(from + "T00:00:00").getTime();
+          data = data.filter((item) => item._ts > 0 && item._ts >= fromTs);
+        }
+        if (to) {
+          const toTs = new Date(to + "T23:59:59.999").getTime();
+          data = data.filter((item) => item._ts > 0 && item._ts <= toTs);
+        }
+
+        const filterActive = device !== "__all__" || !!from || !!to;
+        renderEvidence(data, filterActive);
+      }
+
+      // Renders the given evidence subset to the map, sidebar and timeline
+      function renderEvidence(data, filterActive) {
+        const statusMsg = document.getElementById("status-msg");
+        const listDiv = document.getElementById("results-list");
+
+        // Clear the previous render (filters re-render without a new scan)
+        markers.forEach((m) => map.removeLayer(m));
+        markers = [];
+        if (polylineLayer) {
+          map.removeLayer(polylineLayer);
+          polylineLayer = null;
+        }
+        listDiv.innerHTML = "";
+
+        // The export always follows what is currently shown
         lastScanData = data;
         const exportBtn = document.getElementById("exportBtn");
-        exportBtn.disabled = false;
-        exportBtn.title = "Export scan results";
+        exportBtn.disabled = data.length === 0;
+        exportBtn.title = data.length === 0 ? "No evidence to export" : "Export scan results";
+
+        // Completeness summary so the investigator knows how much of the
+        // evidence set was actually examined
+        const stats = fullScanStats;
+        if (filterActive) {
+          const partial = stats && stats.aborted ? ", partial scan" : "";
+          statusMsg.innerText = data.length === 0 ? "No evidence matches the current filters." : `Showing ${data.length} of ${fullScanData.length} evidence (filtered${partial}).`;
+        } else if (stats && stats.aborted) {
+          statusMsg.innerText = `Scan cancelled — partial results: ${data.length} evidence from ${stats.processed} of ${stats.totalFiles} files.`;
+        } else {
+          let statusText = "Found " + data.length + " evidence.";
+          if (stats) {
+            statusText += ` Scanned ${stats.totalFiles} files`;
+            if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
+            statusText += ".";
+          }
+          statusMsg.innerText = statusText;
+        }
+
+        if (data.length === 0) return;
 
         let latlngs = [];
 
@@ -436,9 +558,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const distanceThreshold = 0.0001; // Approx 10-15 meters threshold
         let groupedData = [];
 
-        data.forEach((item, index) => {
-          item.originalIndex = index;
-
+        data.forEach((item) => {
           let foundGroup = groupedData.find((group) => {
             return Math.abs(group.lat - item.lat) < distanceThreshold && Math.abs(group.lon - item.lon) < distanceThreshold;
           });
@@ -572,24 +692,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
       }
 
-      // --- Clipboard & Toast Logic ---
+      // --- Toast Logic ---
       let toastTimeout;
-
-      function copyToClipboard(inputElement) {
-        // Visually selecst the text so the user knows what they clicked
-        inputElement.select();
-
-        // Uses the modern cross-platform Chromium Clipboard API for cross platform support linux macOs n windows
-        navigator.clipboard
-          .writeText(inputElement.value)
-          .then(() => {
-            showToast("Address copied to clipboard!");
-          })
-          .catch((err) => {
-            console.error("Failed to copy text: ", err);
-            showToast("Failed to copy!");
-          });
-      }
 
       function showToast(message, isError = false) {
         const toast = document.getElementById("toast");
@@ -620,7 +724,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           showCustomAlert("Run a scan first — there are no results to export yet.", "No Data");
           return;
         }
-        document.getElementById("exportCount").innerText = `${lastScanData.length} evidence files from the current scan, in chronological order.`;
+        const filtered = fullScanData.length > 0 && lastScanData.length !== fullScanData.length;
+        document.getElementById("exportCount").innerText = filtered
+          ? `${lastScanData.length} of ${fullScanData.length} evidence files (filters applied), in chronological order.`
+          : `${lastScanData.length} evidence files from the current scan, in chronological order.`;
         document.getElementById("exportModal").style.display = "block";
       }
 
@@ -671,7 +778,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           triggerDownload(exportFilename("geojson"), "application/geo+json", JSON.stringify(collection, null, 2));
         } else if (format === "kml") {
           const escXml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-          let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>Refloow Geo Forensics Export</name>\n`;
+          let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>GeoForensics Export</name>\n`;
           data.forEach((item, i) => {
             kml += `<Placemark>\n<name>${i + 1}. ${escXml(item.name)}</name>\n<description>Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}</description>\n<Point><coordinates>${item.lon},${item.lat}${item.alt != null ? "," + item.alt : ""}</coordinates></Point>\n</Placemark>\n`;
           });
@@ -682,6 +789,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         document.getElementById("exportModal").style.display = "none";
         showToast(`Export downloaded (${format.toUpperCase()}).`);
       }
+
+      // Filter control wiring
+      document.getElementById("filterDevice").addEventListener("change", applyFilters);
+      document.getElementById("filterFrom").addEventListener("change", applyFilters);
+      document.getElementById("filterTo").addEventListener("change", applyFilters);
+      document.getElementById("clearFiltersBtn").addEventListener("click", clearFilters);
     </script>
 
     <div id="customAlertModal" class="modal">
@@ -700,29 +813,17 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <div class="modal-section">
           <h3>Official Links</h3>
           <ul>
-            <li><a href="https://refloow.com" target="_blank">Website (refloow.com)</a></li>
-            <li><a href="https://discord.com/invite/D8WCtDD" target="_blank">Discord Support Server</a></li>
-            <li><a href="https://linktr.ee/Refloow" target="_blank">Linktree (all socials)</a></li>
-            <li><a href="https://github.com/Refloow/Refloow-Geo-Forensics" target="_blank">GitHub Repository (leaving a free ⭐ helps my work and others find the software)</a></li>
-            <li><a href="https://github.com/Refloow/Refloow-Geo-Forensics/issues" target="_blank">Report an Issue</a></li>
-            <li><a href="https://refloow.com/open-source-software/refloow-geo-forensics" target="_blank">Read more about refloow geo forensics</a></li>
-          </ul>
-        </div>
-
-        <div class="modal-section">
-          <h3>Refloow Provides Many Free Open Source Tools</h3>
-          <ul>
-            <li><a href="https://refloow.com/open-source-software" target="_blank">Discover all software projects</a></li>
+            <li><a href="https://github.com/silvance/Geo-Forensics" target="_blank">GitHub Repository (leaving a free ⭐ helps others find the software)</a></li>
+            <li><a href="https://github.com/silvance/Geo-Forensics/issues" target="_blank">Report an Issue / Request a Feature</a></li>
           </ul>
         </div>
 
         <div class="modal-section" style="border-top: 1px solid #2a3a60; padding-top: 20px; margin-top: 20px;">
-          <button id="openDonationsFromSupportBtn" class="analyse-btn" style="width: 100%; margin-bottom: 10px;">☕ Support Development (Donations)</button>
           <button id="openCreditsBtn" class="browse-btn" style="width: 100%;">📜 Open Source Credits</button>
         </div>
 
         <div class="modal-footer">
-          &copy; 2026 Refloow.com &copy; Veljko Vuckovic
+          &copy; 2026 GeoForensics contributors &mdash; based on Refloow Geo Forensics &copy; Veljko Vuckovic (AGPL-3.0)
         </div>
       </div>
     </div>
@@ -737,61 +838,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             This software is built on the shoulders of giants. Thank you to the creators and maintainers of the following open-source technologies:
           </p>
           <ul>
+            <li><a href="https://github.com/Refloow/Refloow-Geo-Forensics" target="_blank">Refloow Geo Forensics</a> - by Veljko Vuckovic, the original project GeoForensics is forked from (AGPL-3.0)</li>
             <li><a href="https://leafletjs.com/" target="_blank">Leaflet</a> - Interactive Maps</li>
             <li><a href="https://exiftool.org/" target="_blank">ExifTool</a> - Core Metadata Extraction Engine (by Phil Harvey)</li>
             <li><a href="https://www.npmjs.com/package/exiftool-vendored" target="_blank">exiftool-vendored</a> - Node.js integration for ExifTool</li>
             <li><a href="https://expressjs.com/" target="_blank">Express.js</a> - Local API & Routing</li>
           </ul>
-        </div>
-      </div>
-    </div>
-
-    <div id="donationModal" class="modal">
-      <div class="modal-content" style="max-width: 950px;">
-        <span class="close-donation-btn close-btn">&times;</span>
-        <h2 style="color: #e94560; margin-bottom: 10px;">Support Development</h2>
-        <p style="font-size: 0.95em; color: #a0a0a0; margin-bottom: 25px;">
-          Refloow Geo Forensics is completely free and open-source. If this tool has assisted your investigations, consider supporting future updates!
-        </p>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Bitcoin (BTC)</span>
-          <input type="text" class="crypto-input" value="bc1qay2l04mmqhztq8mj7usjlff22ay6a37x9pl9uk" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Ethereum, Polygon & Arbitrum (ETH, POL, ARB or Any Stablecoins)</span>
-          <input type="text" class="crypto-input" value="0xFD531dc8e3E78C57212F303f684f5A2aD312f7ca" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Solana (SOL) or any stablecoins</span>
-          <input type="text" class="crypto-input" value="8LFVByQUKJVGnBBoAso9KqCbUnFtm875gMkumMRNnEZ2" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Tron (TRX) or stablecoins</span>
-          <input type="text" class="crypto-input" value="TMEeyojQaC6HXBww7FGQKkF1ZcDeUr3esW" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Kaspa (KAS)</span>
-          <input type="text" class="crypto-input" value="kaspa:qrzd6vvd9h32cxr776l5vx3q94uyyp9wp7fjs36qjx3hltldxz0kwh9qy9hak" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Monero (XMR)</span>
-          <input type="text" class="crypto-input" value="46Aff9taPnbDqdkbSJ8rAzWqAyuKugt3b87irbcUcbLiSkgPff1YFRW3SRoLJtaA4sQhFTbdy7VFa97LpN4yhXRp3vz9vnj" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Litecoin (LTC)</span>
-          <input type="text" class="crypto-input" value="ltc1qvrhhgvyhl7f08r9pmchnzzfhgffuzwzqfpr3hm" readonly onclick="copyToClipboard(this)" />
-        </div>
-
-        <div class="crypto-row">
-          <span class="crypto-label">Bitcoin Cash (BCH)</span>
-          <input type="text" class="crypto-input" value="qqe99z466a8wdknxvxkcw60p72ddhkg2lvfuh9jqzz" readonly onclick="copyToClipboard(this)" />
         </div>
       </div>
     </div>
@@ -875,10 +927,6 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       const timelineLinesToggle = document.getElementById("timelineLinesToggle");
       const timelineNumbersToggle = document.getElementById("timelineNumbersToggle");
 
-      const donationModal = document.getElementById("donationModal");
-      const donationBtn = document.getElementById("donationBtn");
-      const closeDonationBtn = document.querySelector(".close-donation-btn");
-
       const sidebar = document.getElementById("sidebar");
       const toggleSidebarBtn = document.getElementById("toggleSidebarBtn");
 
@@ -920,14 +968,6 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       closeSettingsBtn.onclick = function () {
         settingsModal.style.display = "none";
-      };
-
-      donationBtn.onclick = function () {
-        donationModal.style.display = "block";
-      };
-
-      closeDonationBtn.onclick = function () {
-        donationModal.style.display = "none";
       };
 
       function applyTheme(isLight, overrideMap = false) {
@@ -1028,7 +1068,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       // Modal
 
-      // --- Support, Donations & Credits Modal Logic ---
+      // --- Support & Credits Modal Logic ---
       const supportModal = document.getElementById("supportModal");
       const supportBtn = document.getElementById("supportBtn");
       const closeSupportBtn = document.getElementById("closeSupportBtn");
@@ -1036,8 +1076,6 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       const creditsModal = document.getElementById("creditsModal");
       const openCreditsBtn = document.getElementById("openCreditsBtn");
       const closeCreditsBtn = document.getElementById("closeCreditsBtn");
-
-      const openDonationsFromSupportBtn = document.getElementById("openDonationsFromSupportBtn");
 
       // Support Modal Triggers
       supportBtn.onclick = function () {
@@ -1051,11 +1089,6 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       openCreditsBtn.onclick = function () {
         supportModal.style.display = "none";
         creditsModal.style.display = "block";
-      };
-
-      openDonationsFromSupportBtn.onclick = function () {
-        supportModal.style.display = "none";
-        donationModal.style.display = "block";
       };
 
       // Close Credits
@@ -1092,7 +1125,6 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         if (event.target == supportModal) supportModal.style.display = "none";
         if (event.target == alertModal) alertModal.style.display = "none";
         if (event.target == settingsModal) settingsModal.style.display = "none";
-        if (event.target == donationModal) donationModal.style.display = "none";
         if (event.target == creditsModal) creditsModal.style.display = "none";
         if (event.target == exportModal) exportModal.style.display = "none";
       };

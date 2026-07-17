@@ -1,7 +1,7 @@
 {
-  "name": "refloow-geo-forensics",
+  "name": "geoforensics",
   "version": "1.4.0",
-  "description": "Application which allows to tag photos to their geolocations using forensic methods of reading metadata and EXIF data of photos.",
+  "description": "GeoForensics: free batch image & video geolocation and EXIF forensics tool. Extracts metadata, maps GPS coordinates, and reconstructs event timelines - fully local.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -11,11 +11,11 @@
     "package:mac": "electron-builder --mac --publish never",
     "package:linux": "electron-builder --linux --publish never"
   },
-  "author": "Veljko Vuckovic",
+  "author": "Silvance",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Refloow/Refloow-Geo-Forensics.git"
+    "url": "git+https://github.com/silvance/Geo-Forensics.git"
   },
   "dependencies": {
     "electron-updater": "6.8.3",
@@ -28,9 +28,9 @@
     "electron-builder": "26.7.0"
   },
   "build": {
-    "appId": "com.refloow.geoforensics",
-    "productName": "Refloow Geo Forensics",
-    "copyright": "Copyright © Refloow",
+    "appId": "com.silvance.geoforensics",
+    "productName": "GeoForensics",
+    "copyright": "Copyright \u00a9 2026 GeoForensics contributors. Based on Refloow Geo Forensics \u00a9 Veljko Vuckovic",
     "asar": true,
     "asarUnpack": [
       "node_modules/exiftool-vendored/**",
@@ -60,21 +60,8 @@
           "arch": [
             "x64"
           ]
-        },
-        {
-          "target": "appx",
-          "arch": [
-            "x64"
-          ]
         }
       ]
-    },
-    "appx": {
-      "identityName": "Refloow.RefloowGeoForensics",
-      "publisher": "CN=8281F212-0778-4AAA-A785-4B72BFF348A9",
-      "publisherDisplayName": "Refloow",
-      "applicationId": "RefloowGeoForensics",
-      "backgroundColor": "#121212"
     },
     "mac": {
       "icon": "img/iconMAC.png",
@@ -91,12 +78,11 @@
         "snap"
       ],
       "category": "Utility",
-      "maintainer": "Veljko Vuckovic <legal@refloow.com>",
-      "description": "Tool for geolocation of evidence."
+      "description": "GeoForensics: batch image & video geolocation forensics tool."
     },
     "snap": {
       "summary": "Free batch image & video geolocation digital forensics tool",
-      "description": "Refloow™ Geo Forensics is a high-performance, open-source digital forensics tool designed for investigators, OSINT practitioners, and security analysts. It automates the extraction of EXIF metadata from batch image sets or videos, visualizes geospatial data on interactive maps, and reconstructs chronological event timelines to uncover hidden connections in digital evidence. Fully private & local, no data collection, no logins required.",
+      "description": "GeoForensics is a free, open-source digital forensics tool for investigators, OSINT practitioners, and security analysts. It extracts EXIF metadata from batches of images or videos, visualizes GPS data on interactive maps, and reconstructs chronological event timelines. Fully private and local: no data collection, no logins. Fork of Refloow Geo Forensics (AGPL-3.0).",
       "confinement": "strict",
       "plugs": [
         "default",
@@ -105,8 +91,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "Refloow",
-      "repo": "Refloow-Geo-Forensics"
+      "owner": "silvance",
+      "repo": "Geo-Forensics"
     },
     "npmRebuild": false,
     "nsis": {
@@ -114,10 +100,13 @@
       "license": "LICENSE",
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "img/icon.ico",
-      "shortcutName": "Refloow Geo Forensics",
+      "shortcutName": "GeoForensics",
       "createDesktopShortcut": true,
       "perMachine": false,
-      "uninstallDisplayName": "Refloow Geo Forensics"
+      "uninstallDisplayName": "GeoForensics"
     }
-  }
+  },
+  "contributors": [
+    "Veljko Vuckovic (author of Refloow Geo Forensics, the original project)"
+  ]
 }

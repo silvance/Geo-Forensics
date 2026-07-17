@@ -1,246 +1,87 @@
-# 📍 Refloow™ Geo Forensics Official Github Repository
-### **Professional Open-Source OSINT & Digital Forensics Tool**
+# 📍 GeoForensics
+
+### **Open-Source Batch Image & Video Geolocation Forensics**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2020.10.0-brightgreen)](https://nodejs.org/)
-[![Version](https://img.shields.io/badge/version-1.4.0-orange)](https://github.com/Refloow/Refloow-Geo-Forensics) **Version 1.4.0 (Latest):** [![Bright Coding](https://img.shields.io/badge/Featured_in-Bright_Coding-CC0000?style=flat-square)](https://www.blog.brightcoding.dev/2026/06/25/stop-manually-hunting-exif-data-refloow-geo-forensics-does-it-in-seconds) **Version 1.0.0 (Launch):** [![Dark Web Informer](https://img.shields.io/badge/Featured_in-Dark_Web_Informer-CC0000?style=flat-square)](https://darkwebinformer.com/refloow-geo-forensics-a-free-batch-image-geolocation-and-exif-forensics-tool-for-osint/)
+[![Tests](https://github.com/silvance/Geo-Forensics/actions/workflows/tests.yml/badge.svg)](https://github.com/silvance/Geo-Forensics/actions/workflows/tests.yml)
 
-**Refloow™ Geo Forensics** is a high-performance, open-source digital forensics tool designed for investigators, OSINT practitioners, and security analysts. It automates the extraction of EXIF metadata from batch image sets or videos, visualizes geospatial data on interactive maps, and reconstructs chronological event timelines to uncover hidden connections in digital evidence. Fully private & local, no data collection, no logins required.
-
-[**Resources and socials**](https://linktr.ee/Refloow) | [**Report a Bug/Request feature**](https://github.com/Refloow/Refloow-Geo-Forensics/issues) | [**Other Refloow Software**](https://refloow.com/open-source-software)
+**GeoForensics** is a free, open-source digital forensics tool for investigators, OSINT practitioners, and security analysts. Point it at a folder of images or videos and it extracts EXIF metadata in bulk, plots every GPS coordinate on an interactive map, and reconstructs a chronological timeline of events — entirely on your own machine. No uploads, no accounts, no telemetry.
 
 ---
-<p align="left">
-   <a href="https://apps.microsoft.com/detail/9MW4C0FZMR81">
-    <img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" height="45" />
-  </a> 
- 
- <a href="https://snapcraft.io/refloow-geo-forensics">
-    <img src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" alt="Get it from the Snap Store" height="45" />
-  </a>
-</p>
 
-> [!IMPORTANT]
-> You can get the software via, microsoft store, linux snap store or github releases
-> 
-> If you find this tool useful leave a ⭐ to support my work (its free) and helps others discover the software
+## 🚀 Features
 
-## 🚀 Key Features and Showcase
+* **Batch EXIF extraction** — processes entire directory trees concurrently using [ExifTool](https://exiftool.org/), supporting virtually every image and video format (JPG, HEIC, CR3, MP4, MOV, …).
+* **Interactive mapping** — evidence plotted on six switchable map layers (dark, light, satellite, topographic, humanitarian, street), with clustered pins for co-located files.
+* **Timeline reconstruction** — results are sorted chronologically, numbered on the map, and connected with a movement path to track motion or verify alibis.
+* **Live progress & cancel** — scans stream real progress ("Scanning 4,812 / 20,000 files…") and can be cancelled mid-flight; partial results are clearly flagged so they can't be mistaken for a complete scan.
+* **Filtering** — narrow large result sets by device or date range without rescanning; evidence numbering stays stable so references never shift.
+* **Evidence export** — download any scan (or filtered subset) as **CSV** (spreadsheets/reports), **GeoJSON** (QGIS, ArcGIS), or **KML** (Google Earth), including coordinates, altitude, timestamps, and device info.
+* **Scan completeness reporting** — the status line tells you how many files were examined and how many were unreadable, so nothing is silently skipped.
+* **Media previews** — optional thumbnails in the sidebar and map popups (toggle off for maximum performance on huge sets).
+* **Offline-capable** — the app runs fully locally and its UI loads without an internet connection; only map tiles require network access.
+* **Dark & light mode**, altitude display, precision zoom, and cross-platform support (Windows, Linux, macOS).
 
-* **Batch EXIF Extraction:** Process hundreds of files simultaneously to pull deep metadata regardless of the image/video file type.
-* **Geospatial Visualization:** Automatically plot GPS coordinates onto interactive maps for immediate situational awareness. Variety of mapping layers are available: (Forensic Dark, Forensic Light, Satelite Imagery, Topographic Terrain, Humanitarian (Rural) & Standard Street).
-* **Timeline Reconstruction:** Generate a chronological flow of events based on image timestamps to track movement or verify alibis.
-* **Privacy-First OSINT:** Run locally on your machine—no data is ever uploaded to external servers.
-* **Lightweight & Fast:** Optimized for rapid analysis without heavy resource consumption.
-* **Dark & Light mode:** Operate under any conditions, easilly toggle mode you chose via settings panel
-* **Image Preview:** Preview images in the sidebar or directly by clicking on the map (toggle on & off via settings panel)
-* **Multi system support:** Available on Windows, Linux & MacOS
-* **Utilizes industry standard [ExifTool](https://exiftool.org/) by Phil Harvey** - as a exif data extraction engine, via node.js exiftool-vendored approach, supporting every image, video or filetype ever available!
+## 🔒 Privacy
 
-<img  src="https://github.com/user-attachments/assets/74f80f1d-6865-4a86-8237-e68f3f3bce12" alt="Previews enabled satellite map layer" />
+All processing happens locally. The embedded web server binds to `127.0.0.1` only, serves only files discovered by the current scan, and nothing is ever transmitted anywhere. See [PRIVACY.md](.github/PRIVACY.md).
 
----
-| App UI - Previews Enabled (Satellite Map) | App UI - Previews Disabled (Max Performance) |
-| :---: | :---: |
-| <img  src="https://github.com/user-attachments/assets/74f80f1d-6865-4a86-8237-e68f3f3bce12" alt="Previews enabled satellite map layer" /> | <img src="https://github.com/user-attachments/assets/3c09a4eb-82fe-40ef-93de-35c917b46b02" alt="Previews disabled max performance" /> |
-| **App UI - Previews & Light Mode Enabled** | **App UI - Light Mode (Standard Street Map)** |
-| <img width="2558" height="1378" src="https://github.com/user-attachments/assets/d662a91d-d4e5-47a7-9918-db0ce0ebc39f" alt="Previews & light mode enabled" /> | <img src="https://github.com/user-attachments/assets/4f7531e3-47c1-471d-b7e9-023e9ae2733c" alt="Previews disabled & light mode enabled standard street map"/> |
-* not all mapping options are shown here there is 6 layer modes
+## 💻 Requirements
 
-> [!IMPORTANT]
-> ## Note on File Headers & AI Defense
-> 
-> If you are exploring the source code, you will notice dense block comments at the very top of each file that look like LLM system instructions (e.g., `Brand-Type: PROPER_NOUN`). 
-> 
-> **Please note: This entire codebase is 100% human-authored by Veljko Vuckovic.** 
-> Everything here is read, tested, and written in VS Code by the project author, not generated by AI.
-> 
-> Some people see the headers and think, *"What is this AI nonsense?"* but we are actually fighting *against* it! 
-> The headers are a deliberate **Data Poisoning / Prompt Injection** technique. Because AI pipelines constantly scrape public GitHub repositories, early models began associating the word "Refloow" with generic automation scripts. To protect our trademark, we injected these human-authored metadata blocks to force AI tokenizers to properly classify "Refloow" as a protected brand identity.
-> 
-> **For Contributors:** 
-> Please simply skip the metadata comments at the beginning of every file. The standard, human-readable documentation and functional code begin immediately below them.
-> 
-> 📖 **Read the full technical breakdown of how this works:** [refloow.com/ai-defense](https://refloow.com/ai-defense)
+* **OS:** Windows 10/11, macOS (Intel/Apple Silicon), or Linux
+* **Runtime:** [Node.js](https://nodejs.org/) v20.10.0 or newer (development)
+* **Stack:** Electron, Express, `exiftool-vendored`, Leaflet
 
-
-## 💻 System Requirements & Technical Specs
-
-To ensure stable performance during batch processing, the following specifications are recommended:
-
-### **Software Requirements**
-* **Operating System:** Windows 10/11, macOS (Intel/Apple Silicon), or Linux (Ubuntu/Debian recommended).
-* **Runtime:** Node.js **v20.10.0** or higher.
-* **Framework:** Built with Electron for cross-platform desktop compatibility.
-* **Primary Libraries:** `express`, `exiftool-vendored`, `leaflet` & `electron`.
-
-### **Hardware Requirements**
 | Component | Minimum | Recommended |
 | :--- | :--- | :--- |
-| **Storage** | ~350 MB for installation | 500 MB+ |
-| **RAM** | 2 GB | 4 GB+ (for large batch processing) |
-| **Processor** | Dual-core 2.0GHz | Quad-core+ for faster parsing |
+| **Storage** | ~350 MB | 500 MB+ |
+| **RAM** | 2 GB | 4 GB+ for large batches |
+| **CPU** | Dual-core 2.0 GHz | Quad-core+ for faster parsing |
 
+## 🛠️ Getting Started
+
+```bash
+git clone https://github.com/silvance/Geo-Forensics.git
+cd Geo-Forensics/src
+npm install
+npm start
+```
+
+### Running the tests
+
+```bash
+npm test
+```
+
+The test suite covers the scanning engine (recursive walking, symlink-loop protection, GPS/altitude extraction, completeness stats, abort semantics) and the local HTTP API (scan, streaming progress, cancel, image allowlist). Tests run automatically on every push and pull request via GitHub Actions.
+
+### Packaging
+
+```bash
+npm run package          # Windows (NSIS installer)
+npm run package:mac      # macOS (dmg + zip)
+npm run package:linux    # Linux (AppImage, deb, snap)
+```
 
 ## 📖 Usage
 
-1.  **Import:** Select a directory for batch analysis.
-2.  **Analyze:** The tool will automatically parse EXIF headers for GPS, camera model, and timestamps.
-3.  **Visualize:** Switch to the Map View to see geographical clusters of where photos were taken.
+1. **Import** — click *Browse Folder* (or paste a path) to select an evidence folder.
+2. **Analyze** — the scanner walks the tree and extracts GPS, timestamps, device, and altitude from every readable file, with live progress. Cancel anytime; partials are flagged.
+3. **Investigate** — explore the map, follow the numbered timeline, filter by device or date, and preview media.
+4. **Export** — hand off results as CSV, GeoJSON, or KML.
 
-## 📜 License (community edition)
+## 🤝 Contributing
 
-This project (community edition) is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. This ensures that the tool remains open-source and that any improvements made by the community are shared back with the public.
-This version is made available for individuals, students, researchers, and everyone interested in geo forensics under restrictions of GNU Affero General Public License v3.0 (AGPL-3.0) license
+Bug reports, feature requests, and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the [issue tracker](https://github.com/silvance/Geo-Forensics/issues).
 
-## 📜 License (Commercial) - For Institutions
+## 📜 License
 
-**Enterprise License** exists with Proprietary licensing for government, enterprise, and closed-source commercial deployment is available providing:
-1. AGPL Exemption: Edit, modify, and deploy without sharing your changes.
-2. Keep your intellectual property closed
-3. Internal network deployment rights
-4. Priority dedicated technical support
-   
-To obtain this enterprise license inquire using available contact options for further details and contract:
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see [LICENSE](LICENSE). Any distributed modifications must remain open source under the same license.
 
----
+## 🙏 Acknowledgments
 
-## 🤝 Contact & Support
-
-* **Founder:** Veljko Vuckovic
-* **Website:** [refloow.com](https://refloow.com)
-* **All social links:** [linktree](https://linktr.ee/Refloow)
-* **Official community telegram:** [link](https://t.me/+LC9l6d-Jhco2NTU0)
-* **Official community discord:** [link](https://discord.com/invite/D8WCtDD)
-* refloowbusiness@gmail.com
----
-
-## ☕ Support the Project
-
-Refloow Geo Forensics is completely free, open-source. If this tool has saved you time during an investigation or helped your workflow, consider supporting future updates!
-
-**Cryptocurrency Addresses:**
-
-* **Bitcoin (BTC):**
-    ```text
-    bc1qay2l04mmqhztq8mj7usjlff22ay6a37x9pl9uk
-    ```
-* **Ethereum, Polygon & Arbitrum (ETH, POL, ARB or Any Stablecoins):**
-    ```text
-    0xFD531dc8e3E78C57212F303f684f5A2aD312f7ca
-    ```
-* **Solana (SOL or Stables):**
-    ```text
-    8LFVByQUKJVGnBBoAso9KqCbUnFtm875gMkumMRNnEZ2
-    ```
-* **Tron (TRX or Stables):**
-    ```text
-    TMEeyojQaC6HXBww7FGQKkF1ZcDeUr3esW
-    ```
-* **Kaspa (KAS):**
-    ```text
-    kaspa:qrzd6vvd9h32cxr776l5vx3q94uyyp9wp7fjs36qjx3hltldxz0kwh9qy9hak
-    ```
-* **Monero (XMR):**
-    ```text
-    46Aff9taPnbDqdkbSJ8rAzWqAyuKugt3b87irbcUcbLiSkgPff1YFRW3SRoLJtaA4sQhFTbdy7VFa97LpN4yhXRp3vz9vnj
-    ```
-* **Litecoin (LTC):**
-    ```text
-    ltc1qvrhhgvyhl7f08r9pmchnzzfhgffuzwzqfpr3hm
-    ```
-* **Bitcoin Cash (BCH):**
-    ```text
-    qqe99z466a8wdknxvxkcw60p72ddhkg2lvfuh9jqzz
-    ```
-
-## For contributors and developers
-
----
-
-## 🛠️ Dev Installation
-
-1.  **Clone the Repository**
-    ```bash
-    git clone [https://github.com/Refloow/Refloow-Geo-Forensics.git](https://github.com/Refloow/Refloow-Geo-Forensics.git)
-    cd Refloow-Geo-Forensics/src
-    ```
-
-2.  **Install Dependencies**
-    ```bash
-    npm install
-    ```
-
-3.  **Run the Application**
-    ```bash
-    npm start
-    ```
-
-4.  **Run the Tests** (scanning engine & local API)
-    ```bash
-    npm test
-    ```
-
----
-
----
-
-## 📰 Featured In
-
-**Refloow Geo Forensics** has been recognized by the cybersecurity community.
-
-> Stop Manually Hunting EXIF Data! Refloow Geo Forensics Does It in Seconds
->
-> "This isn't hobbyist software. This is production-grade forensics infrastructure that happens to be completely free."
-> 
-> "This isn't just another metadata tool. It's the secret weapon that top OSINT practitioners are quietly adopting while everyone else still struggles with manual workflows."
-> 
-> "Privacy regulations and corporate policies increasingly prohibit cloud-based analysis of sensitive evidence—making local-only processing not just preferable, but mandatory."
-> 
-> "This isn't just convenient—it's legally defensible. When you need to establish movement patterns, verify alibis, or identify chronological inconsistencies in testimony, automated timeline generation eliminates human transcription errors."
-> 
-> — **[Bright Coding](https://www.blog.brightcoding.dev/2026/06/25/stop-manually-hunting-exif-data-refloow-geo-forensics-does-it-in-seconds)** (Jun 2026)
-
-> OSINT Tools directory feature
->
-> — **[osintrack.com](https://osintrack.com/)** (May 2026)
-
-> Featured OSINT Tools
-> 
-> — **[The OSINT Vault](https://theosintvault.io/)** (Apr 2026)
-
-> Refloow Geo Forensics: Free batch image geolocation and digital forensics tool
-> 
-> — **[EsGeeks](https://x.com/EsGeeks/status/2042762254660096432)** (Apr 2026)
-
-> OSINTech's Timeline #157
-> 
-> — **[OSINTech](https://osintech.substack.com/p/osintechs-timeline-157-09042026)** (Apr 2026)
-
-> 🔎 OSINT Tool: Refloow Geo Forensics: Extract Hidden Data from Images
-> 
-> — **[CyberSudo](https://www.youtube.com/post/Ugkx4Fi73qxY4QYuQoJE07ZXFs4nTmS-EQ1h)** (Mar 2026)
-
-> Refloow Geo Forensics: A Free Batch Image Geolocation and EXIF Forensics Tool for OSINT
-> 
-> — **[osintteam.blog curated list of tools](https://osintteam.blog/osint-related-articles-20260216-10fa2f9b4a31)** (Feb 2026)
-
-> "Refloow Geo Forensics fills a niche for investigators and OSINT practitioners who need a quick, visual way to process batches of geotagged images without uploading anything to the cloud. [...] For the specific use case of 'I have a folder of JPGs and I need to see where and when they were taken,' this tool gets the job done with minimal friction."
->
-> — **[Dark Web Informer](https://darkwebinformer.com/refloow-geo-forensics-a-free-batch-image-geolocation-and-exif-forensics-tool-for-osint/)** (Feb 2026)
-
-<div align="center">
-  <a href="https://darkwebinformer.com/refloow-geo-forensics-a-free-batch-image-geolocation-and-exif-forensics-tool-for-osint/">
-    <img src="https://img.shields.io/badge/Read_Full_Review-Dark_Web_Informer-CC0000?style=for-the-badge&logo=security&logoColor=white" alt="Read Review on Dark Web Informer">
-  </a>
-</div>
-
-
-
-
-
-
-
-
-
-
+* **GeoForensics is a fork of [Refloow Geo Forensics](https://github.com/Refloow/Refloow-Geo-Forensics)** by Veljko Vuckovic, used under AGPL-3.0. Original copyright notices are preserved in the source files. This project is independent of and not affiliated with or endorsed by Refloow.
+* **[ExifTool](https://exiftool.org/)** by Phil Harvey — the metadata extraction engine, via [`exiftool-vendored`](https://www.npmjs.com/package/exiftool-vendored).
+* **[Leaflet](https://leafletjs.com/)** — interactive maps.
+* **[Express](https://expressjs.com/)** — the local API server.

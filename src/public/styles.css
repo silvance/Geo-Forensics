@@ -574,52 +574,7 @@ body.os-darwin .title-buttons {
 /* =========================================
    DONATION MODAL THEMING
    ========================================= */
-.crypto-row {
-    display: flex;
-    flex-direction: column;
-    margin-bottom: 15px;
-}
-
-.crypto-label {
-    font-size: 13px;
-    font-weight: bold;
-    color: #e94560;
-    margin-bottom: 5px;
-    text-align: left;
-}
-
-.crypto-input {
-    width: 100%;
-    padding: 10px 15px; 
-    background-color: #111a30;
-    border: 1px solid #0f3460;
-    color: #d0d0d0;
-    border-radius: 4px;
-    font-family: monospace;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    text-align: left; 
-}
-
-.crypto-input:focus {
-    outline: none;
-    border-color: #e94560;
-    background-color: #16213e;
-}
-
 /* Light Theme Overrides for Donations */
-body.light-theme .crypto-input {
-    background-color: #f9f9f9;
-    border: 1px solid #cccccc;
-    color: #1a1a1a;
-}
-
-body.light-theme .crypto-input:focus {
-    background-color: #ffffff;
-    border-color: #e94560;
-}
-
 /* =========================================
    TOAST NOTIFICATION
    ========================================= */
@@ -718,6 +673,86 @@ body.light-theme #scanProgressContainer {
     background-color: #d5d5d5;
 }
 
+/* =========================================
+   EVIDENCE FILTER PANEL (sidebar)
+   ========================================= */
+#filterPanel {
+    margin: 10px 10px 0;
+    padding: 10px;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid #2a3a60;
+    border-radius: 6px;
+}
+
+#filterPanel .filter-title {
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    margin-bottom: 8px;
+}
+
+#filterPanel select,
+#filterPanel input[type="date"] {
+    width: 100%;
+    box-sizing: border-box;
+    background-color: #16213e;
+    color: #d0d0d0;
+    border: 1px solid #2a3a60;
+    border-radius: 4px;
+    padding: 5px 6px;
+    font-size: 12px;
+    color-scheme: dark; /* Renders the native date picker in dark colors */
+}
+
+#filterPanel .filter-dates {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+#clearFiltersBtn {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 5px;
+    font-size: 12px;
+    background: none;
+    border: 1px solid #2a3a60;
+    border-radius: 4px;
+    color: #888;
+    cursor: pointer;
+}
+
+#clearFiltersBtn:hover {
+    color: #d0d0d0;
+    border-color: #e94560;
+}
+
+body.light-theme #filterPanel {
+    background-color: #ffffff;
+    border-color: #cbd5e1;
+}
+
+body.light-theme #filterPanel select,
+body.light-theme #filterPanel input[type="date"] {
+    background-color: #f1f5f9;
+    color: #1e293b;
+    border-color: #cbd5e1;
+    color-scheme: light;
+}
+
+body.light-theme #clearFiltersBtn {
+    color: #64748b;
+    border-color: #cbd5e1;
+}
+
+body.light-theme #clearFiltersBtn:hover {
+    color: #0f172a;
+    border-color: #e94560;
+}
+
 .analyse-btn {
     background-color: #e94560; 
     color: #ffffff;
@@ -796,25 +831,6 @@ body.light-theme #scanProgressContainer {
     margin-bottom: clamp(10px, 3vh, 25px) !important;
     font-size: clamp(12px, 1.8vh, 15px) !important;
 }
-
-#donationModal .crypto-row {
-    display: flex;
-    flex-direction: column;
-    margin-bottom: clamp(3px, 1.8vh, 15px);
-}
-
-#donationModal .crypto-label {
-    font-size: clamp(11px, 1.5vh, 13px);
-    margin-bottom: clamp(2px, 0.5vh, 5px);
-}
-
-#donationModal .crypto-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: clamp(6px, 1.2vh, 10px) 15px; 
-    font-size: clamp(11px, 1.5vh, 13px);
-}
-
 
 /* =========================================
    RETRACTABLE SIDEBAR
