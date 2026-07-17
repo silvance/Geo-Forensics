@@ -204,6 +204,60 @@ test('GET /api/image serves scanned files and nothing else', async () => {
     assert.equal(missing.status, 404);
 });
 
+test('scanDirectory reports progress for every file', async () => {
+    const calls = [];
+    const { stats } = await scanDirectory(tmpDir, {
+        onProgress: (processed, total) => calls.push([processed, total])
+    });
+    assert.equal(calls.length, 5);
+    assert.deepEqual(calls[calls.length - 1], [5, 5]);
+    assert.equal(stats.processed, 5);
+    assert.equal(stats.aborted, false);
+});
+
+test('scanDirectory stops early when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { results, stats } = await scanDirectory(tmpDir, { signal: controller.signal });
+    assert.equal(results.length, 0);
+    assert.equal(stats.processed, 0);
+    assert.equal(stats.aborted, true);
+    assert.equal(stats.totalFiles, 5); // Discovery still ran; examination did not
+});
+
+test('GET /api/scan-stream emits progress and done events', async () => {
+    const res = await fetch(`${baseUrl}/api/scan-stream?path=${encodeURIComponent(tmpDir)}&id=test-stream-1`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/event-stream/);
+
+    const body = await res.text(); // The server ends the stream after "done"
+    assert.ok(body.includes('event: progress'), 'expected at least one progress event');
+    assert.ok(body.includes('event: done'), 'expected a done event');
+
+    // Parse the payload of the done event
+    const doneData = body.split('event: done\n')[1].split('\n')[0].replace('data: ', '');
+    const payload = JSON.parse(doneData);
+    assert.equal(payload.data.length, 3);
+    assert.equal(payload.stats.totalFiles, 5);
+    assert.equal(payload.stats.aborted, false);
+});
+
+test('GET /api/scan-stream reports an invalid path as a scan-error event', async () => {
+    const res = await fetch(`${baseUrl}/api/scan-stream?path=${encodeURIComponent(path.join(tmpDir, 'missing'))}&id=test-stream-2`);
+    const body = await res.text();
+    assert.ok(body.includes('event: scan-error'), 'expected a scan-error event');
+    assert.ok(!body.includes('event: done'));
+});
+
+test('POST /api/scan-cancel rejects unknown scan ids', async () => {
+    const res = await fetch(`${baseUrl}/api/scan-cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scanId: 'no-such-scan' })
+    });
+    assert.equal(res.status, 404);
+});
+
 test('GET /vendor/leaflet serves the bundled Leaflet build', async () => {
     const js = await fetch(`${baseUrl}/vendor/leaflet/leaflet.js`);
     assert.equal(js.status, 200);

@@ -145,7 +145,12 @@ async function collectFiles(rootPath) {
     return files;
 }
 
-async function scanDirectory(dirPath) {
+// options.onProgress: called as (processedCount, totalFiles) after every file
+// options.signal: an AbortSignal; aborting stops the scan early and the
+// partial results are returned with stats.aborted = true
+async function scanDirectory(dirPath, options = {}) {
+    const { onProgress, signal } = options;
+
     const files = await collectFiles(resolveScanRoot(dirPath));
 
     // A new scan resets the UI, so files from the previous scan no longer
@@ -159,11 +164,16 @@ async function scanDirectory(dirPath) {
 
     // Completeness counters: an investigator needs to know how much of the
     // evidence set was actually examined, not just what matched
+    let processed = 0;
     let noLocation = 0;
     let unreadable = 0;
 
     async function worker() {
         while (nextIndex < files.length) {
+            // Stop claiming new files once the scan has been cancelled;
+            // reads already in flight are allowed to finish
+            if (signal && signal.aborted) return;
+
             const index = nextIndex++;
             const file = files[index];
 
@@ -175,12 +185,10 @@ async function scanDirectory(dirPath) {
                 // format) as an Error tag instead of throwing
                 if (tags.Error) {
                     unreadable++;
-                    continue;
-                }
 
                 // Check if GPS data exists. 0 is a valid coordinate on the
                 // equator / prime meridian, so only reject missing values
-                if (tags.GPSLatitude != null && tags.GPSLongitude != null) {
+                } else if (tags.GPSLatitude != null && tags.GPSLongitude != null) {
 
                     // Format the Time natively
                     let formattedTime = "Unknown Time";
@@ -207,6 +215,9 @@ async function scanDirectory(dirPath) {
                 // Count files ExifTool can't parse instead of hiding them
                 unreadable++;
             }
+
+            processed++;
+            if (onProgress) onProgress(processed, files.length);
         }
     }
 
@@ -223,9 +234,11 @@ async function scanDirectory(dirPath) {
         results: found,
         stats: {
             totalFiles: files.length,
+            processed: processed,
             withLocation: found.length,
             noLocation: noLocation,
-            unreadable: unreadable
+            unreadable: unreadable,
+            aborted: !!(signal && signal.aborted)
         }
     };
 }

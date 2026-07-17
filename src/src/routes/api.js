@@ -73,9 +73,9 @@ const router = express.Router();
 const { scanDirectory, isServableFile } = require('../utils/scanner');
 
 
-router.post('/scan', async (req, res) => { 
+router.post('/scan', async (req, res) => {
     const { folderPath } = req.body;
-    
+
     console.log(`[ANALYZE] Request for folder: ${folderPath}`);
 
     try {
@@ -84,6 +84,76 @@ router.post('/scan', async (req, res) => {
     } catch (error) {
         console.error("Error:", error.message);
         res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+// Scans currently streaming over /scan-stream, keyed by the client-generated
+// id, so /scan-cancel can abort them mid-flight
+const activeScans = new Map();
+
+// Streaming variant of /scan: emits live "progress" events over Server-Sent
+// Events while the scan runs, then a final "done" (or "scan-error") event
+router.get('/scan-stream', async (req, res) => {
+    const folderPath = req.query.path;
+    const scanId = req.query.id;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const send = (event, payload) => {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    if (typeof folderPath !== 'string' || folderPath.trim() === '') {
+        send('scan-error', { error: 'No path provided' });
+        res.end();
+        return;
+    }
+
+    console.log(`[ANALYZE] Streaming scan for folder: ${folderPath}`);
+
+    const controller = new AbortController();
+    if (typeof scanId === 'string' && scanId) activeScans.set(scanId, controller);
+
+    // Abort the scan if the app window disappears mid-scan
+    req.on('close', () => controller.abort());
+
+    try {
+        // Progress events are throttled so huge folders don't flood the stream
+        let lastSent = 0;
+        const { results, stats } = await scanDirectory(folderPath, {
+            signal: controller.signal,
+            onProgress: (processed, total) => {
+                const now = Date.now();
+                if (processed === total || now - lastSent >= 100) {
+                    lastSent = now;
+                    send('progress', { processed, total });
+                }
+            }
+        });
+        send('done', { data: results, stats: stats });
+    } catch (error) {
+        console.error("Error:", error.message);
+        send('scan-error', { error: error.message });
+    } finally {
+        if (typeof scanId === 'string' && scanId) activeScans.delete(scanId);
+        res.end();
+    }
+});
+
+// Cancels a running streaming scan; its partial results still arrive
+// through the open event stream, flagged with stats.aborted
+router.post('/scan-cancel', (req, res) => {
+    const { scanId } = req.body;
+    const controller = scanId ? activeScans.get(scanId) : undefined;
+
+    if (controller) {
+        controller.abort();
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ success: false, error: 'No active scan with that id' });
     }
 });
 

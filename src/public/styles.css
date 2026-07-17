@@ -689,6 +689,35 @@ body.light-theme .crypto-input:focus {
     color: #1e293b;
 }
 
+/* Analyze button turns into a Cancel button while a scan runs */
+.analyse-btn.cancel-mode {
+    background-color: #7f1d1d;
+}
+
+.analyse-btn.cancel-mode:hover {
+    background-color: #991b1b;
+}
+
+/* Thin live progress bar attached below the controls strip during a scan */
+#scanProgressContainer {
+    display: none;
+    padding: 0 20px 12px;
+    background-color: #1f4068; /* Matches #controls so the bar looks attached */
+}
+
+#scanProgressBar {
+    height: 4px;
+    width: 0%;
+    border-radius: 2px;
+    background-color: #e94560;
+    box-shadow: 0 0 6px rgba(233, 69, 96, 0.6);
+    transition: width 0.15s ease;
+}
+
+body.light-theme #scanProgressContainer {
+    background-color: #d5d5d5;
+}
+
 .analyse-btn {
     background-color: #e94560; 
     color: #ffffff;
