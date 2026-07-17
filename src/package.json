@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "server": "node src/server.js",
+    "test": "node --test",
     "package": "electron-builder --win --publish never",
     "package:mac": "electron-builder --mac --publish never",
     "package:linux": "electron-builder --linux --publish never"
@@ -19,7 +20,8 @@
   "dependencies": {
     "electron-updater": "6.8.3",
     "exiftool-vendored": "35.20.0",
-    "express": "5.2.1"
+    "express": "5.2.1",
+    "leaflet": "1.9.4"
   },
   "devDependencies": {
     "electron": "40.4.0",
@@ -68,7 +70,7 @@
       ]
     },
     "appx": {
-      "identityName": "Refloow.RefloowGeoForensics", 
+      "identityName": "Refloow.RefloowGeoForensics",
       "publisher": "CN=8281F212-0778-4AAA-A785-4B72BFF348A9",
       "publisherDisplayName": "Refloow",
       "applicationId": "RefloowGeoForensics",

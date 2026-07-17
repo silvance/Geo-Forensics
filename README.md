@@ -72,7 +72,7 @@ To ensure stable performance during batch processing, the following specificatio
 * **Operating System:** Windows 10/11, macOS (Intel/Apple Silicon), or Linux (Ubuntu/Debian recommended).
 * **Runtime:** Node.js **v20.10.0** or higher.
 * **Framework:** Built with Electron for cross-platform desktop compatibility.
-* **Primary Libraries:** `express`, `exiftool-vendored` & `electron`.
+* **Primary Libraries:** `express`, `exiftool-vendored`, `leaflet` & `electron`.
 
 ### **Hardware Requirements**
 | Component | Minimum | Recommended |
@@ -174,6 +174,11 @@ Refloow Geo Forensics is completely free, open-source. If this tool has saved yo
 3.  **Run the Application**
     ```bash
     npm start
+    ```
+
+4.  **Run the Tests** (scanning engine & local API)
+    ```bash
+    npm test
     ```
 
 ---

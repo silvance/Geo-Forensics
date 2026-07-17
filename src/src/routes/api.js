@@ -79,8 +79,8 @@ router.post('/scan', async (req, res) => {
     console.log(`[ANALYZE] Request for folder: ${folderPath}`);
 
     try {
-        const data = await scanDirectory(folderPath); 
-        res.json({ success: true, data: data });
+        const { results, stats } = await scanDirectory(folderPath);
+        res.json({ success: true, data: results, stats: stats });
     } catch (error) {
         console.error("Error:", error.message);
         res.status(400).json({ success: false, error: error.message });

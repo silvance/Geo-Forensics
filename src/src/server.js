@@ -77,6 +77,11 @@ const PORT = 3000;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
+
+// Serve Leaflet from the bundled npm package instead of a CDN, so the UI
+// loads with no internet connection (evidence work is often offline)
+app.use('/vendor/leaflet', express.static(path.join(__dirname, '../node_modules/leaflet/dist')));
+
 app.use('/api', apiRoutes);
 
 app.post('/api/estimate', async (req, res) => {
@@ -126,7 +131,8 @@ function startServer(port = 3000) {
     });
 }
 
-module.exports = { startServer };
+// app is exported so the test suite can bind it to an ephemeral port
+module.exports = { startServer, app };
 
 /* Refloow Geo Forensics
  * Copyright (C) 2026  Veljko Vuckovic (Refloow) <legal@refloow.com>
