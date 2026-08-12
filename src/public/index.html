@@ -429,6 +429,23 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         applyFilters();
       }
 
+      function degToCompass(deg) {
+        const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+        return dirs[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+      }
+
+      // Shared metadata block for map popups; optional fields only appear
+      // when the file actually recorded them
+      function buildItemDetailsHtml(item) {
+        let html = `<b>File:</b> ${escapeHTML(item.name)}<br><b>Time:</b> ${escapeHTML(item.time)}<br><b>Device:</b> ${escapeHTML(item.camera)}`;
+        if (item.alt != null) html += `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m`;
+        if (item.heading != null) html += `<br><b>Heading:</b> ${item.heading.toFixed(0)}&deg; (${degToCompass(item.heading)})`;
+        if (item.speedKmh != null) html += `<br><b>Speed:</b> ${item.speedKmh.toFixed(1)} km/h`;
+        if (item.lens) html += `<br><b>Lens:</b> ${escapeHTML(item.lens)}`;
+        if (item.software) html += `<br><b>Software:</b> ${escapeHTML(item.software)}`;
+        return html;
+      }
+
       // EXIF timestamps look like "2026:01:15 10:30:00"; returns 0 when unknown
       function parseExifTimestamp(timeStr) {
         if (!timeStr || timeStr === "Unknown Time") return 0;
@@ -552,25 +569,30 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const showPreviews = localStorage.getItem("imagePreviews") === "true";
         const showLines = localStorage.getItem("timelineLines") !== "false";
         const showNumbers = localStorage.getItem("timelineNumbers") !== "false";
+        const showDirection = localStorage.getItem("cameraDirection") !== "false";
 
         // RENDERING MARKERS
 
-        const distanceThreshold = 0.0001; // Approx 10-15 meters threshold
+        // Group co-located files by snapping to a ~10-15 m grid cell; a Map
+        // lookup keeps grouping O(n) where pairwise comparison was O(n²)
+        const distanceThreshold = 0.0001;
+        const groupIndex = new Map();
         let groupedData = [];
 
         data.forEach((item) => {
-          let foundGroup = groupedData.find((group) => {
-            return Math.abs(group.lat - item.lat) < distanceThreshold && Math.abs(group.lon - item.lon) < distanceThreshold;
-          });
+          const key = `${Math.round(item.lat / distanceThreshold)}_${Math.round(item.lon / distanceThreshold)}`;
+          const existing = groupIndex.get(key);
 
-          if (foundGroup) {
-            foundGroup.items.push(item);
+          if (existing) {
+            existing.items.push(item);
           } else {
-            groupedData.push({
+            const group = {
               lat: item.lat,
               lon: item.lon,
               items: [item],
-            });
+            };
+            groupIndex.set(key, group);
+            groupedData.push(group);
           }
         });
 
@@ -628,9 +650,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             const popupContent = `
               ${getPreviewHtml(item, true)}
               <div style="font-size: 13px;">
-                  <b>File:</b> ${escapeHTML(item.name)}<br>
-                  <b>Time:</b> ${escapeHTML(item.time)}<br>
-                  <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
+                  ${buildItemDetailsHtml(item)}
               </div>`;
             marker.bindPopup(popupContent);
           } else {
@@ -644,9 +664,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                   <span style="font-size: 11px; color:#aaa; font-weight: bold;">Chronological File #${item.originalIndex + 1}</span><br>
                   ${getPreviewHtml(item, true)}
                   <div style="font-size: 13px;">
-                      <b>File:</b> ${escapeHTML(item.name)}<br>
-                      <b>Time:</b> ${escapeHTML(item.time)}<br>
-                      <b>Device:</b> ${escapeHTML(item.camera)}${item.alt != null ? `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m` : ""}
+                      ${buildItemDetailsHtml(item)}
                   </div>
                 </div>`;
             });
@@ -656,6 +674,23 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           }
 
           markers.push(marker);
+
+          // Camera direction cones: which way the lens was pointing when
+          // the photo recorded a GPSImgDirection heading
+          if (showDirection) {
+            group.items.forEach((item) => {
+              if (item.heading == null) return;
+              const coneIcon = L.divIcon({
+                className: "direction-cone",
+                html: `<svg viewBox="0 0 40 40" width="40" height="40" style="transform: rotate(${Number(item.heading)}deg);"><polygon points="20,20 13,3 27,3" fill="rgba(56, 189, 248, 0.4)" stroke="rgba(56, 189, 248, 0.9)" stroke-width="1"/></svg>`,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20],
+              });
+              const cone = L.marker([item.lat, item.lon], {icon: coneIcon, interactive: false, keyboard: false, zIndexOffset: -1000});
+              cone.addTo(map);
+              markers.push(cone);
+            });
+          }
 
           // Sidebar Elements
           group.items.forEach((item) => {
@@ -757,9 +792,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         if (format === "csv") {
           // Quote every text field so paths and device names with commas survive
           const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-          const rows = ["#,File,Full Path,Latitude,Longitude,Altitude (m),Timestamp,Device"];
+          const rows = ["#,File,Full Path,Latitude,Longitude,Altitude (m),Timestamp,Device,Heading (deg),Speed (km/h),Lens,Software"];
           data.forEach((item, i) => {
-            rows.push([i + 1, esc(item.name), esc(item.fullPath), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.camera)].join(","));
+            rows.push([i + 1, esc(item.name), esc(item.fullPath), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
           });
           triggerDownload(exportFilename("csv"), "text/csv", rows.join("\r\n"));
         } else if (format === "geojson") {
@@ -772,7 +807,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 // GeoJSON is [longitude, latitude, (altitude)]
                 coordinates: item.alt != null ? [item.lon, item.lat, item.alt] : [item.lon, item.lat],
               },
-              properties: {index: i + 1, name: item.name, path: item.fullPath, time: item.time, device: item.camera},
+              properties: {index: i + 1, name: item.name, path: item.fullPath, time: item.time, device: item.camera, heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software},
             })),
           };
           triggerDownload(exportFilename("geojson"), "application/geo+json", JSON.stringify(collection, null, 2));
@@ -780,7 +815,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           const escXml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
           let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>GeoForensics Export</name>\n`;
           data.forEach((item, i) => {
-            kml += `<Placemark>\n<name>${i + 1}. ${escXml(item.name)}</name>\n<description>Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}</description>\n<Point><coordinates>${item.lon},${item.lat}${item.alt != null ? "," + item.alt : ""}</coordinates></Point>\n</Placemark>\n`;
+            let desc = `Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}`;
+            if (item.heading != null) desc += `\nHeading: ${item.heading.toFixed(0)}° (${degToCompass(item.heading)})`;
+            if (item.speedKmh != null) desc += `\nSpeed: ${item.speedKmh.toFixed(1)} km/h`;
+            if (item.lens) desc += `\nLens: ${escXml(item.lens)}`;
+            if (item.software) desc += `\nSoftware: ${escXml(item.software)}`;
+            kml += `<Placemark>\n<name>${i + 1}. ${escXml(item.name)}</name>\n<description>${desc}</description>\n<Point><coordinates>${item.lon},${item.lat}${item.alt != null ? "," + item.alt : ""}</coordinates></Point>\n</Placemark>\n`;
           });
           kml += `</Document>\n</kml>\n`;
           triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
@@ -862,10 +902,11 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <td>${item.originalIndex + 1}</td>
         <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div></td>
         <td>${esc(item.time)}</td>
-        <td>${esc(item.camera)}</td>
+        <td>${esc(item.camera)}${item.software ? `<div class="path">Software: ${esc(item.software)}</div>` : ""}</td>
         <td class="num">${item.lat}</td>
         <td class="num">${item.lon}</td>
         <td class="num">${item.alt != null ? item.alt.toFixed(1) + " m" : "—"}</td>
+        <td class="num">${item.heading != null ? item.heading.toFixed(0) + "° " + degToCompass(item.heading) : "—"}</td>
         <td><a href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(item.lat)}&amp;mlon=${encodeURIComponent(item.lon)}#map=16/${encodeURIComponent(item.lat)}/${encodeURIComponent(item.lon)}">map</a></td>
       </tr>`).join("");
 
@@ -917,7 +958,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <h2>Evidence (chronological)</h2>
   <table>
     <thead>
-      <tr><th>#</th><th>File</th><th>Timestamp</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Link</th></tr>
+      <tr><th>#</th><th>File</th><th>Timestamp</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
     </thead>
     <tbody>${rows}
     </tbody>
@@ -1045,8 +1086,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             <input type="checkbox" id="timelineNumbersToggle" style="width: 18px; height: 18px;" />
             Show Chronological Numbers on Map
           </label>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-top: 10px;">
+            <input type="checkbox" id="cameraDirectionToggle" style="width: 18px; height: 18px;" />
+            Show Camera Direction Cones
+          </label>
           <p style="font-size: 0.9em; color: #888; margin-top: 5px;">
-            Traces the chronological movement between evidence points.
+            Traces the chronological movement between evidence points. Direction cones show which way the camera was facing (when the photo recorded it).
           </p>
         </div>
       </div>
@@ -1065,6 +1110,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       const timelineLinesToggle = document.getElementById("timelineLinesToggle");
       const timelineNumbersToggle = document.getElementById("timelineNumbersToggle");
+      const cameraDirectionToggle = document.getElementById("cameraDirectionToggle");
 
       const sidebar = document.getElementById("sidebar");
       const toggleSidebarBtn = document.getElementById("toggleSidebarBtn");
@@ -1125,6 +1171,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
         const isTimelineNumbersEnabled = localStorage.getItem("timelineNumbers") !== "false"; // Default true
         timelineNumbersToggle.checked = isTimelineNumbersEnabled;
+
+        cameraDirectionToggle.checked = localStorage.getItem("cameraDirection") !== "false"; // Default true
 
         // Fetch and display dynamic app version
         if (window.electronAPI && window.electronAPI.getAppVersion) {
@@ -1199,6 +1247,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       timelineNumbersToggle.addEventListener("change", (e) => {
         localStorage.setItem("timelineNumbers", e.target.checked ? "true" : "false");
+      });
+
+      cameraDirectionToggle.addEventListener("change", (e) => {
+        localStorage.setItem("cameraDirection", e.target.checked ? "true" : "false");
+        // Re-render immediately so the cones appear/disappear without a rescan
+        if (fullScanData.length > 0) applyFilters();
       });
 
       document.addEventListener("DOMContentLoaded", () => {

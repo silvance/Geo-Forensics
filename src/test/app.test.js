@@ -66,6 +66,10 @@ before(async () => {
         GPSLatitude: 44.8125, GPSLongitude: 20.4612,
         GPSLatitudeRef: 'N', GPSLongitudeRef: 'E',
         GPSAltitude: 117.3,
+        GPSImgDirection: 247.5, GPSImgDirectionRef: 'T',
+        GPSSpeed: 30, GPSSpeedRef: 'M',
+        LensModel: 'Test back camera 6.81mm f/1.68',
+        Software: 'Adobe Photoshop 25.0',
         DateTimeOriginal: '2026:01:15 10:30:00',
         Model: 'TestCam <img src=x onerror=alert(1)>'
     });
@@ -142,6 +146,23 @@ test('scanDirectory extracts time, device and altitude', async () => {
     assert.equal(belgrade.alt, 117.3);
     const nested = results.find((r) => r.name === 'nested.jpg');
     assert.equal(nested.alt, null);
+});
+
+test('scanDirectory extracts heading, speed, lens and software', async () => {
+    const { results } = await scanDirectory(tmpDir);
+    const belgrade = results.find((r) => r.name === 'belgrade.jpg');
+    assert.equal(belgrade.heading, 247.5);
+    // 30 mph, normalized to km/h
+    assert.ok(Math.abs(belgrade.speedKmh - 48.28032) < 0.001, `speedKmh was ${belgrade.speedKmh}`);
+    assert.equal(belgrade.lens, 'Test back camera 6.81mm f/1.68');
+    assert.equal(belgrade.software, 'Adobe Photoshop 25.0');
+
+    // Files without these tags report null, not undefined or 0
+    const nested = results.find((r) => r.name === 'nested.jpg');
+    assert.equal(nested.heading, null);
+    assert.equal(nested.speedKmh, null);
+    assert.equal(nested.lens, null);
+    assert.equal(nested.software, null);
 });
 
 test('isServableFile only allows files discovered by the scan', async () => {

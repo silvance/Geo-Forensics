@@ -673,6 +673,14 @@ body.light-theme #scanProgressContainer {
     background-color: #d5d5d5;
 }
 
+/* Camera direction cones are decorative map overlays: no default divIcon
+   chrome, and they must never intercept clicks meant for the pins */
+.direction-cone {
+    background: none;
+    border: none;
+    pointer-events: none;
+}
+
 /* =========================================
    EVIDENCE FILTER PANEL (sidebar)
    ========================================= */
