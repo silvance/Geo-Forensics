@@ -19,7 +19,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const router = express.Router();
-const { scanDirectory, isServableFile } = require('../utils/scanner');
+const { scanDirectory, isServableFile, getExiftoolVersion } = require('../utils/scanner');
+const mbtiles = require('../utils/mbtiles');
+
+// Application version, read once from package.json, for report/manifest provenance
+let appVersion = 'unknown';
+try { appVersion = require('../../package.json').version; } catch (err) { /* keep default */ }
 
 
 router.post('/scan', async (req, res) => {
@@ -117,6 +122,59 @@ router.get('/image', (req, res) => {
     } else {
         res.status(404).send('Image not found');
     }
+});
+
+// Tool versions for report/manifest provenance. Works without Electron so the
+// case report and forensic manifest can record provenance in any context.
+router.get('/versions', async (req, res) => {
+    res.json({
+        success: true,
+        appVersion,
+        exiftoolVersion: await getExiftoolVersion(),
+    });
+});
+
+// --- Offline map (MBTiles) endpoints ---
+// All tile serving happens here on the loopback server; the renderer never
+// reads the .mbtiles file directly.
+
+// Import / activate an offline map by path. The path comes from the native
+// file picker in the desktop app. The file is validated (read-only) before use.
+router.post('/offline-map', (req, res) => {
+    const { path: mapPath } = req.body || {};
+    try {
+        const meta = mbtiles.setActiveMap(mapPath);
+        res.json({ success: true, meta });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+// Current active offline map metadata, or null.
+router.get('/offline-map', (req, res) => {
+    res.json({ success: true, meta: mbtiles.getActiveMap() });
+});
+
+// Deactivate the offline map.
+router.delete('/offline-map', (req, res) => {
+    mbtiles.clearActiveMap();
+    res.json({ success: true });
+});
+
+// Serve one raster tile. z/x/y are parsed as integers and validated in
+// mbtiles.getTile (which rejects anything non-integer or out of range);
+// missing tiles return 404. The trailing extension, if any, is ignored.
+router.get('/tiles/:z/:x/:y', (req, res) => {
+    const z = parseInt(req.params.z, 10);
+    const x = parseInt(req.params.x, 10);
+    const y = parseInt(String(req.params.y).replace(/\.\w+$/, ''), 10); // strip .png etc.
+    const tile = mbtiles.getTile(z, x, y);
+    if (!tile) {
+        return res.status(404).send('Tile not found');
+    }
+    res.set('Content-Type', tile.contentType);
+    res.set('Cache-Control', 'no-store');
+    res.send(tile.data);
 });
 
 module.exports = router;

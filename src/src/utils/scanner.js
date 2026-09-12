@@ -18,7 +18,22 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { exiftool } = require('exiftool-vendored');
+
+// Streams a file through SHA-256, returning { sha256, error }. The file is read
+// read-only and never modified. Streaming keeps memory flat regardless of file
+// size, so large videos don't blow up a batch scan. A read failure is reported
+// (never silently dropped) so an examiner sees which files could not be hashed.
+function hashFile(filePath) {
+    return new Promise((resolve) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', (err) => resolve({ sha256: null, error: err.code || err.message }));
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve({ sha256: hash.digest('hex'), error: null }));
+    });
+}
 
 // How many files are handed to ExifTool at once. exiftool-vendored keeps a
 // pool of background processes, so reading files one by one leaves most of
@@ -103,6 +118,87 @@ function toKmh(speed, ref) {
     return speed;
 }
 
+// exiftool-vendored returns date tags as ExifDateTime objects; this returns
+// the raw EXIF string exactly as stored (never a reformatted/normalized value).
+function rawDateString(v) {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    return v.rawValue || v.toString();
+}
+
+// Determines the UTC offset for a timestamp field without ever guessing.
+// EXIF timestamps frequently carry no timezone; we only report an offset when
+// one is GENUINELY RECORDED in the file — embedded in the timestamp value or in
+// the paired EXIF Offset* tag. Crucially, we do NOT trust exiftool's inferred
+// zone (it derives one from GPS coordinates, which is an inference, not a fact
+// in the file); reporting that as a known offset would misrepresent evidence.
+// Returns { known, offset } where offset is e.g. "+02:00" or null.
+function resolveOffset(dateValue, offsetTagValue) {
+    // An offset embedded in the raw timestamp value itself is definitive
+    const raw = rawDateString(dateValue);
+    if (raw) {
+        const m = raw.match(/([+-]\d{2}:?\d{2}|Z)$/);
+        if (m) {
+            const off = m[1] === 'Z' ? '+00:00' : m[1].replace(/^([+-]\d{2})(\d{2})$/, '$1:$2');
+            return { known: true, offset: off };
+        }
+    }
+    // The paired EXIF Offset* tag, when the timestamp itself had none
+    if (offsetTagValue) {
+        return { known: true, offset: String(offsetTagValue) };
+    }
+    // No recorded offset — timezone is genuinely unknown. Never inferred.
+    return { known: false, offset: null };
+}
+
+// Builds the full timestamp picture for a file. All three raw EXIF timestamps
+// and their offset tags are preserved; the timeline field is chosen as
+// DateTimeOriginal -> CreateDate -> ModifyDate (unchanged), but which field was
+// used and whether its timezone is known are made explicit.
+function extractTimestamps(tags) {
+    const dateTimeOriginal = rawDateString(tags.DateTimeOriginal);
+    const createDate = rawDateString(tags.CreateDate);
+    const modifyDate = rawDateString(tags.ModifyDate);
+
+    const timestamps = {
+        dateTimeOriginal,
+        createDate,
+        modifyDate,
+        offsetTimeOriginal: tags.OffsetTimeOriginal ? String(tags.OffsetTimeOriginal) : null,
+        offsetTimeDigitized: tags.OffsetTimeDigitized ? String(tags.OffsetTimeDigitized) : null,
+        offsetTime: tags.OffsetTime ? String(tags.OffsetTime) : null,
+    };
+
+    // Timeline selection with EXIF-correct offset pairing:
+    //   DateTimeOriginal <- OffsetTimeOriginal
+    //   CreateDate       <- OffsetTimeDigitized
+    //   ModifyDate       <- OffsetTime
+    let timelineField = null;
+    let selectedValue = null;
+    let tz = { known: false, offset: null };
+    if (tags.DateTimeOriginal != null) {
+        timelineField = 'DateTimeOriginal';
+        selectedValue = tags.DateTimeOriginal;
+        tz = resolveOffset(tags.DateTimeOriginal, tags.OffsetTimeOriginal);
+    } else if (tags.CreateDate != null) {
+        timelineField = 'CreateDate';
+        selectedValue = tags.CreateDate;
+        tz = resolveOffset(tags.CreateDate, tags.OffsetTimeDigitized);
+    } else if (tags.ModifyDate != null) {
+        timelineField = 'ModifyDate';
+        selectedValue = tags.ModifyDate;
+        tz = resolveOffset(tags.ModifyDate, tags.OffsetTime);
+    }
+
+    return {
+        timestamps,
+        timelineField,
+        time: selectedValue != null ? rawDateString(selectedValue) : 'Unknown Time',
+        timezoneKnown: tz.known,
+        timezoneOffset: tz.offset,
+    };
+}
+
 // options.onProgress: called as (processedCount, totalFiles) after every file
 // options.signal: an AbortSignal; aborting stops the scan early and the
 // partial results are returned with stats.aborted = true
@@ -125,6 +221,7 @@ async function scanDirectory(dirPath, options = {}) {
     let processed = 0;
     let noLocation = 0;
     let unreadable = 0;
+    let hashFailures = 0;
 
     async function worker() {
         while (nextIndex < files.length) {
@@ -148,23 +245,32 @@ async function scanDirectory(dirPath, options = {}) {
                 // equator / prime meridian, so only reject missing values
                 } else if (tags.GPSLatitude != null && tags.GPSLongitude != null) {
 
-                    // Format the Time natively
-                    let formattedTime = "Unknown Time";
-                    const rawDate = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
+                    // Preserve all three raw EXIF timestamps and their offsets,
+                    // and record which field drives the timeline plus whether
+                    // its timezone is actually known
+                    const ts = extractTimestamps(tags);
 
-                    if (rawDate) {
-                        formattedTime = rawDate.rawValue || rawDate.toString();
-                    }
+                    // Reproducible identifier for the file (original bytes)
+                    const hash = await hashFile(file.fullPath);
+                    if (hash.error) hashFailures++;
 
                     servableFiles.add(file.fullPath);
                     results[index] = {
                         name: file.name,
                         fullPath: file.fullPath,
+                        sha256: hash.sha256,
+                        hashError: hash.error,
                         lat: tags.GPSLatitude,
                         lon: tags.GPSLongitude,
                         alt: typeof tags.GPSAltitude === 'number' ? tags.GPSAltitude : null,
-                        time: formattedTime,
+                        time: ts.time,                       // raw string of the timeline field (display + sort)
+                        timelineField: ts.timelineField,     // which EXIF field the timeline used
+                        timezoneKnown: ts.timezoneKnown,     // false = ambiguous local time, do not assume UTC/local
+                        timezoneOffset: ts.timezoneOffset,   // e.g. "+02:00" when known
+                        timestamps: ts.timestamps,           // all raw timestamps + offset tags
                         camera: tags.Model || tags.Make || "Unknown device",
+                        make: tags.Make || null,
+                        model: tags.Model || null,
                         // Extra forensic context, null when the file lacks it
                         heading: typeof tags.GPSImgDirection === 'number' ? tags.GPSImgDirection : null,
                         speedKmh: typeof tags.GPSSpeed === 'number' ? toKmh(tags.GPSSpeed, tags.GPSSpeedRef) : null,
@@ -202,6 +308,7 @@ async function scanDirectory(dirPath, options = {}) {
             withLocation: found.length,
             noLocation: noLocation,
             unreadable: unreadable,
+            hashFailures: hashFailures,
             aborted: !!(signal && signal.aborted)
         }
     };
@@ -212,13 +319,22 @@ async function countFiles(dirPath) {
     return files.length;
 }
 
+// Version of the bundled ExifTool, for report/manifest provenance.
+async function getExiftoolVersion() {
+    try {
+        return await exiftool.version();
+    } catch (err) {
+        return null;
+    }
+}
+
 // Used by the /api/image endpoint to make sure only files discovered by
 // the current scan can ever be served over HTTP
 function isServableFile(filePath) {
     return servableFiles.has(path.resolve(filePath));
 }
 
-module.exports = { scanDirectory, countFiles, isServableFile };
+module.exports = { scanDirectory, countFiles, isServableFile, getExiftoolVersion };
 
 /* Refloow Geo Forensics
  * Copyright (C) 2026  Veljko Vuckovic (Refloow) <legal@refloow.com>

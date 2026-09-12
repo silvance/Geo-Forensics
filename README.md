@@ -3,35 +3,42 @@
 ### **Open-Source Batch Image & Video Geolocation Forensics**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2020.10.0-brightgreen)](https://nodejs.org/)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2022-brightgreen)](https://nodejs.org/)
 [![Tests](https://github.com/silvance/Geo-Forensics/actions/workflows/tests.yml/badge.svg)](https://github.com/silvance/Geo-Forensics/actions/workflows/tests.yml)
 
 **GeoForensics** is a free, open-source digital forensics tool for investigators, OSINT practitioners, and security analysts. Point it at a folder of images or videos and it extracts EXIF metadata in bulk, plots every GPS coordinate on an interactive map, and reconstructs a chronological timeline of events — entirely on your own machine. No uploads, no accounts, no telemetry.
+
+It is built for **offline / air-gapped forensic workstations**: with Air-Gapped Mode on (the default), no data of any kind leaves the machine.
 
 ---
 
 ## 🚀 Features
 
 * **Batch EXIF extraction** — processes entire directory trees concurrently using [ExifTool](https://exiftool.org/), supporting virtually every image and video format (JPG, HEIC, CR3, MP4, MOV, …).
-* **Interactive mapping** — evidence plotted on six switchable map layers (dark, light, satellite, topographic, humanitarian, street), with clustered pins for co-located files.
-* **Timeline reconstruction** — results are sorted chronologically, numbered on the map, and connected with a movement path to track motion or verify alibis.
-* **Live progress & cancel** — scans stream real progress ("Scanning 4,812 / 20,000 files…") and can be cancelled mid-flight; partial results are clearly flagged so they can't be mistaken for a complete scan.
-* **Filtering** — narrow large result sets by device or date range without rescanning; evidence numbering stays stable so references never shift.
-* **Evidence export** — download any scan (or filtered subset) as **CSV** (spreadsheets/reports), **GeoJSON** (QGIS, ArcGIS), or **KML** (Google Earth), including coordinates, altitude, timestamps, and device info.
-* **Scan completeness reporting** — the status line tells you how many files were examined and how many were unreadable, so nothing is silently skipped.
-* **Media previews** — optional thumbnails in the sidebar and map popups (toggle off for maximum performance on huge sets).
-* **Offline-capable** — the app runs fully locally and its UI loads without an internet connection; only map tiles require network access.
-* **Dark & light mode**, altitude display, precision zoom, and cross-platform support (Windows, Linux, macOS).
+* **Air-Gapped Mode (default ON)** — a hard block on all outbound network requests, enforced in the Electron process: no update checks, no online map tiles, nothing leaves the workstation. A header badge always shows the current state.
+* **Offline basemaps** — import a local **MBTiles** raster map package (Settings → Offline Maps) to plot evidence on a real basemap with no connection. Evidence outside the map's coverage is flagged.
+* **SHA-256 hashing** — every located file is hashed (original bytes, read-only) for a reproducible identifier, included in every export.
+* **Forensic timestamps** — all raw EXIF timestamps and their offset tags are preserved; the timeline field used is recorded, and timezone-less timestamps are clearly marked *unknown* (never silently assumed UTC or local).
+* **Interactive mapping** — evidence plotted with clustered pins, chronological numbering, a movement path, and camera-direction cones. Six online basemaps are available when Air-Gapped Mode is off.
+* **Live progress & cancel** — scans stream real progress and can be cancelled mid-flight; partial results are clearly flagged.
+* **Filtering** — narrow results by device or date range without rescanning; evidence numbering stays stable.
+* **Evidence export** — **CSV**, **GeoJSON**, **KML**, a self-contained **HTML case report** (with full scan provenance and an optional embedded thumbnail per image), and a **Forensic Manifest (JSON, `manifestVersion: 1`)** — all including SHA-256, coordinates, altitude, raw timestamps, timezone status, device/lens/software, heading and speed.
+* **Scan completeness reporting** — discovered / examined / located / unreadable / hash-failure counts, surfaced in the UI and baked into reports.
+* **Dark & light mode**, media previews, precision zoom, and cross-platform support (Windows, Linux, macOS).
 
-## 🔒 Privacy
+## 🔒 Privacy & offline guarantee
 
-All processing happens locally. The embedded web server binds to `127.0.0.1` only, serves only files discovered by the current scan, and nothing is ever transmitted anywhere. See [PRIVACY.md](.github/PRIVACY.md).
+All processing happens locally. The embedded web server binds to `127.0.0.1` only and serves only files discovered by the current scan (and imported offline-map tiles). With Air-Gapped Mode on, the Electron process cancels any non-loopback request before it leaves the machine. See [PRIVACY.md](.github/PRIVACY.md).
+
+## 🧭 Working with forensic exports (Magnet AXIOM & others)
+
+GeoForensics analyzes the metadata **embedded in the files you supply**. When exporting evidence from a forensic suite such as Magnet AXIOM, export the **original / native file** whenever possible. Location information that exists only in a separate case artifact or database — not inside the media file itself — cannot be recovered from an exported image that does not contain that metadata. GeoForensics does not parse AXIOM case files; it reads the exported originals.
 
 ## 💻 Requirements
 
 * **OS:** Windows 10/11, macOS (Intel/Apple Silicon), or Linux
-* **Runtime:** [Node.js](https://nodejs.org/) v20.10.0 or newer (development)
-* **Stack:** Electron, Express, `exiftool-vendored`, Leaflet
+* **Runtime (development only):** [Node.js](https://nodejs.org/) **v22 or newer** (the offline-map reader uses Node's built-in SQLite). Packaged builds bundle their own runtime — end users need nothing installed.
+* **Stack:** Electron, Express, `exiftool-vendored`, Leaflet, `node:sqlite` (built-in)
 
 | Component | Minimum | Recommended |
 | :--- | :--- | :--- |

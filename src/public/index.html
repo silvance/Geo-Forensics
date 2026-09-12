@@ -25,6 +25,7 @@
         <span class="subtitle">TOOL FOR GEOLOCATION OF EVIDENCE</span>
       </div>
       <div style="display: flex; align-items: center; gap: 15px;">
+        <span id="airGapBadge" class="airgap-badge" title="Air-Gapped Mode is ON: no outbound network requests are made.">&#9679; AIR-GAPPED</span>
         <button id="settingsBtn" class="support-btn">Settings</button>
         <button id="supportBtn" class="support-btn">Support & Info</button>
         <div id="appVersionDisplay" style="font-size: 12px; color: #888;">Loading...</div>
@@ -68,6 +69,10 @@
       <button id="toggleSidebarBtn" title="Toggle Sidebar">◀</button>
 
       <div id="map"></div>
+      <div id="offlineCoverageWarning"></div>
+      <div id="noBasemapNote" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:900; color:#8a95a8; font-size:13px; text-align:center; max-width:70%; pointer-events:none;">
+        Air-Gapped Mode is on and no offline map is imported.<br>Import an MBTiles map package in <b>Settings &rarr; Offline Maps</b> to see a basemap.
+      </div>
     </div>
 
     <div id="toast" class="toast-hidden"></div>
@@ -192,7 +197,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         maxZoom: 19,
       });
 
-      const baseMaps = {
+      // The six online basemaps. In Air-Gapped Mode none of these are added to
+      // the map or the layer control, so no tile request is ever attempted.
+      const onlineBaseMaps = {
         "Forensic Dark": cartoDark,
         "Forensic Light": cartoLight,
         "Satellite Imagery": esriSatellite,
@@ -201,36 +208,202 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         "Standard Street": osmStandard,
       };
 
-      L.control.layers(baseMaps, null, {position: "topright"}).addTo(map);
+      // Air-Gapped Mode is on by default; only turned off if the examiner
+      // deliberately does so on a connected machine.
+      let airGappedMode = localStorage.getItem("airGapped") !== "false";
 
-      function setMapTheme(isLight, overrideUserMap = false) {
-        // Safely remove ALL base layers before applying a new one
-        Object.values(baseMaps).forEach((layer) => {
-          if (map.hasLayer(layer)) map.removeLayer(layer);
-        });
+      // Offline basemap state (populated in Settings -> Import Map Package)
+      let offlineMapLayer = null;
+      let offlineMapMeta = null;
+      const OFFLINE_MAP_LABEL = "Offline Map";
+      let layersControl = null;
 
-        const savedMapLayer = localStorage.getItem("selectedBaseMap");
+      function offlineLayerName() {
+        return offlineMapMeta && offlineMapMeta.name
+          ? `${OFFLINE_MAP_LABEL} (${offlineMapMeta.name})`
+          : OFFLINE_MAP_LABEL;
+      }
 
-        // If the user hasn't explicitly clicked the theme toggle (overrideUserMap = false)
-        // AND they have a saved custom map layer, restore it.
-        if (savedMapLayer && baseMaps[savedMapLayer] && !overrideUserMap) {
-          baseMaps[savedMapLayer].addTo(map);
-        } else {
-          // Otherwise, fall back to the selected theme's default map
-          if (isLight) {
-            cartoLight.addTo(map);
-            localStorage.setItem("selectedBaseMap", "Forensic Light");
-          } else {
-            cartoDark.addTo(map);
-            localStorage.setItem("selectedBaseMap", "Forensic Dark");
-          }
+      // The set of base layers currently available: the imported offline map
+      // (if any) always, plus the online maps only when not air-gapped.
+      function availableBaseLayers() {
+        const layers = {};
+        if (offlineMapLayer) layers[offlineLayerName()] = offlineMapLayer;
+        if (!airGappedMode) Object.assign(layers, onlineBaseMaps);
+        return layers;
+      }
+
+      // Rebuilds the Leaflet layer control and picks an active base layer.
+      // Called on boot, when Air-Gapped Mode changes, and when an offline map
+      // is imported or removed — none of which require rescanning evidence.
+      function rebuildMapLayers(preferName) {
+        [cartoDark, cartoLight, esriSatellite, topoMap, osmHumanitarian, osmStandard, offlineMapLayer]
+          .forEach((layer) => { if (layer && map.hasLayer(layer)) map.removeLayer(layer); });
+
+        if (layersControl) { map.removeControl(layersControl); layersControl = null; }
+
+        const layers = availableBaseLayers();
+        const names = Object.keys(layers);
+        const noBasemap = document.getElementById("noBasemapNote");
+
+        if (names.length === 0) {
+          // Air-gapped with no offline map imported: intentionally a blank map.
+          if (noBasemap) noBasemap.style.display = "block";
+          return;
+        }
+        if (noBasemap) noBasemap.style.display = "none";
+
+        layersControl = L.control.layers(layers, null, {position: "topright"}).addTo(map);
+
+        const saved = localStorage.getItem("selectedBaseMap");
+        let active = (preferName && layers[preferName]) ? preferName
+                   : (saved && layers[saved]) ? saved
+                   : names[0];
+        layers[active].addTo(map);
+        localStorage.setItem("selectedBaseMap", active);
+      }
+
+      // Theme toggle only swaps the online basemap when online maps are in use;
+      // an imported offline map is theme-independent.
+      function setMapTheme(isLight) {
+        if (!airGappedMode) {
+          rebuildMapLayers(isLight ? "Forensic Light" : "Forensic Dark");
         }
       }
 
-      // Adding listener to save map layer selection when changed via Leaflet UI
+      // Persist the layer the user picks in the Leaflet control
       map.on("baselayerchange", function (e) {
         localStorage.setItem("selectedBaseMap", e.name);
       });
+
+      // --- Offline basemap (MBTiles served by the local server) ---
+
+      // MBTiles metadata bounds are "west,south,east,north"; Leaflet wants
+      // [[south,west],[north,east]]. Returns null when bounds are unknown.
+      function offlineMapLatLngBounds(meta) {
+        if (!meta || !Array.isArray(meta.bounds) || meta.bounds.length !== 4) return null;
+        const [w, s, e, n] = meta.bounds;
+        return L.latLngBounds([[s, w], [n, e]]);
+      }
+
+      function buildOfflineLayer(meta) {
+        const bounds = offlineMapLatLngBounds(meta);
+        return L.tileLayer("/api/tiles/{z}/{x}/{y}", {
+          minNativeZoom: meta.minzoom != null ? meta.minzoom : 0,
+          maxNativeZoom: meta.maxzoom != null ? meta.maxzoom : 19,
+          maxZoom: meta.maxzoom != null ? meta.maxzoom : 19,
+          bounds: bounds || undefined,
+          noWrap: true,
+          // Missing tiles return 404; render nothing rather than broken images
+          errorTileUrl: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
+          attribution: `Offline map${meta.name ? ": " + escapeHTML(meta.name) : ""}`,
+        });
+      }
+
+      // Activates an offline map by telling the local server which .mbtiles file
+      // to read. The file is never copied; only its path is stored.
+      async function loadOfflineMap(mapPath, options = {}) {
+        try {
+          const res = await fetch("/api/offline-map", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({path: mapPath}),
+          });
+          const result = await res.json();
+          if (!result.success) {
+            if (!options.silent) showCustomAlert(result.error || "Could not read that map package.", "Offline Map Error");
+            return false;
+          }
+
+          offlineMapMeta = result.meta;
+          offlineMapLayer = buildOfflineLayer(result.meta);
+          localStorage.setItem("offlineMapPath", mapPath);
+          updateOfflineMapUI();
+          // Prefer the offline map as the active layer when it is first imported
+          rebuildMapLayers(options.silent ? undefined : offlineLayerName());
+          if (!options.silent) {
+            showToast(`Offline map imported: ${offlineMapMeta.name || "map package"}.`);
+            checkOfflineCoverage();
+          }
+          return true;
+        } catch (err) {
+          if (!options.silent) showCustomAlert("Could not import the map package: " + err.message, "Offline Map Error");
+          return false;
+        }
+      }
+
+      // Re-activates a previously imported offline map on boot (server state is
+      // per-launch, so the stored path is re-sent). Clears it if it's gone.
+      async function restoreOfflineMap() {
+        const stored = localStorage.getItem("offlineMapPath");
+        if (!stored) return;
+        const ok = await loadOfflineMap(stored, {silent: true});
+        if (!ok) {
+          localStorage.removeItem("offlineMapPath");
+          offlineMapLayer = null;
+          offlineMapMeta = null;
+          updateOfflineMapUI();
+        }
+      }
+
+      async function removeOfflineMap() {
+        try { await fetch("/api/offline-map", {method: "DELETE"}); } catch (err) { /* local only */ }
+        offlineMapLayer = null;
+        offlineMapMeta = null;
+        localStorage.removeItem("offlineMapPath");
+        updateOfflineMapUI();
+        rebuildMapLayers();
+        document.getElementById("offlineCoverageWarning").style.display = "none";
+      }
+
+      function updateOfflineMapUI() {
+        const status = document.getElementById("offlineMapStatus");
+        const removeBtn = document.getElementById("removeMapBtn");
+        if (offlineMapMeta) {
+          const b = offlineMapMeta.bounds;
+          status.innerHTML = `<b>${escapeHTML(offlineMapMeta.name || "Imported map")}</b><br>` +
+            `Format: ${escapeHTML(offlineMapMeta.format || "unknown")} &middot; ` +
+            `Zoom ${offlineMapMeta.minzoom ?? "?"}&ndash;${offlineMapMeta.maxzoom ?? "?"}<br>` +
+            (Array.isArray(b) ? `Bounds: ${b.map((v) => Number(v).toFixed(3)).join(", ")}` : "Bounds: unknown");
+          removeBtn.style.display = "block";
+        } else {
+          status.innerText = "No offline map imported.";
+          removeBtn.style.display = "none";
+        }
+      }
+
+      // Flags evidence points that fall outside the offline map's coverage so a
+      // missing basemap under a marker is never mistaken for a data problem.
+      function checkOfflineCoverage() {
+        const warn = document.getElementById("offlineCoverageWarning");
+        const bounds = offlineMapMeta && offlineMapLayer && map.hasLayer(offlineMapLayer)
+          ? offlineMapLatLngBounds(offlineMapMeta) : null;
+        if (!bounds || lastScanData.length === 0) {
+          warn.style.display = "none";
+          return;
+        }
+        const outside = lastScanData.filter((item) => !bounds.contains([item.lat, item.lon])).length;
+        if (outside > 0) {
+          warn.innerHTML = `&#9888; ${outside} of ${lastScanData.length} evidence point${outside === 1 ? "" : "s"} fall outside the imported offline map's coverage.`;
+          warn.style.display = "block";
+        } else {
+          warn.style.display = "none";
+        }
+      }
+
+      // Offline-map button handlers are wired in wireOfflineMapButtons(),
+      // called from the boot block once the Settings modal exists in the DOM.
+      function wireOfflineMapButtons() {
+        document.getElementById("importMapBtn").addEventListener("click", async () => {
+          if (!window.electronAPI || !window.electronAPI.selectMbtiles) {
+            showCustomAlert("Map import is only available in the desktop application.", "Unavailable");
+            return;
+          }
+          const mapPath = await window.electronAPI.selectMbtiles();
+          if (mapPath) await loadOfflineMap(mapPath);
+        });
+        document.getElementById("removeMapBtn").addEventListener("click", removeOfflineMap);
+      }
 
       // --- Custom Precision Zoom Control ---
       L.Control.ZoomMode = L.Control.extend({
@@ -258,6 +431,11 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let lastScanData = []; // Currently displayed (possibly filtered) results, used by the export feature
       let fullScanData = []; // All chronologically sorted results of the last scan
       let fullScanStats = null;
+      // Provenance captured per scan, for the case report and forensic manifest
+      let scanStartedAt = null;
+      let scanFinishedAt = null;
+      let scanFolder = "";
+      let toolVersions = { appVersion: null, exiftoolVersion: null };
       let currentScanId = null;
       let scanEventSource = null;
 
@@ -324,6 +502,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
 
         isScanning = true;
+        scanStartedAt = new Date().toISOString();
+        scanFinishedAt = null;
+        scanFolder = pathInput;
 
         document.getElementById("folderPath").classList.add("scanning-active");
         const analyseBtn = document.getElementById("analyseBtn");
@@ -386,6 +567,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const statusMsg = document.getElementById("status-msg");
         const listDiv = document.getElementById("results-list");
 
+        scanFinishedAt = new Date().toISOString();
         listDiv.innerHTML = "";
 
         if (data.length === 0) {
@@ -434,22 +616,36 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         return dirs[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
       }
 
+      // Short human label for a timestamp's timezone status
+      function tzLabel(item) {
+        if (!item.time || item.time === "Unknown Time") return "";
+        return item.timezoneKnown
+          ? ` (UTC${escapeHTML(item.timezoneOffset || "")})`
+          : ` <span title="This EXIF timestamp has no timezone. It is a local wall-clock time of unknown zone; it is NOT assumed to be UTC or your system time.">(timezone unknown)</span>`;
+      }
+
       // Shared metadata block for map popups; optional fields only appear
       // when the file actually recorded them
       function buildItemDetailsHtml(item) {
-        let html = `<b>File:</b> ${escapeHTML(item.name)}<br><b>Time:</b> ${escapeHTML(item.time)}<br><b>Device:</b> ${escapeHTML(item.camera)}`;
+        const fieldNote = item.timelineField ? ` <span style="color:#888;">[${escapeHTML(item.timelineField)}]</span>` : "";
+        let html = `<b>File:</b> ${escapeHTML(item.name)}<br><b>Time:</b> ${escapeHTML(item.time)}${tzLabel(item)}${fieldNote}<br><b>Device:</b> ${escapeHTML(item.camera)}`;
         if (item.alt != null) html += `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m`;
         if (item.heading != null) html += `<br><b>Heading:</b> ${item.heading.toFixed(0)}&deg; (${degToCompass(item.heading)})`;
         if (item.speedKmh != null) html += `<br><b>Speed:</b> ${item.speedKmh.toFixed(1)} km/h`;
         if (item.lens) html += `<br><b>Lens:</b> ${escapeHTML(item.lens)}`;
         if (item.software) html += `<br><b>Software:</b> ${escapeHTML(item.software)}`;
+        if (item.sha256) html += `<br><b>SHA-256:</b> <span style="font-family:monospace; font-size:11px; word-break:break-all;">${escapeHTML(item.sha256)}</span>`;
+        else if (item.hashError) html += `<br><b>SHA-256:</b> <span style="color:#e94560;">failed (${escapeHTML(item.hashError)})</span>`;
         return html;
       }
 
-      // EXIF timestamps look like "2026:01:15 10:30:00"; returns 0 when unknown
+      // Parses an EXIF timestamp ("2026:01:15 10:30:00") to a sortable number.
+      // Any trailing timezone offset is stripped first, so ordering is by
+      // wall-clock only: deterministic and free of timezone assumptions.
       function parseExifTimestamp(timeStr) {
         if (!timeStr || timeStr === "Unknown Time") return 0;
-        const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
+        const naive = String(timeStr).replace(/([+-]\d{2}:?\d{2}|Z)$/, "").trim();
+        const formatted = naive.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
         const timestamp = Date.parse(formatted);
         return isNaN(timestamp) ? 0 : timestamp;
       }
@@ -701,7 +897,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             div.innerHTML = `
                 <div class="evidence-info">
                     <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
-                    <div class="evidence-meta">📅 ${escapeHTML(item.time)}</div>
+                    <div class="evidence-meta">📅 ${escapeHTML(item.time)}${item.time && item.time !== "Unknown Time" && !item.timezoneKnown ? " <span title='EXIF timestamp has no timezone; local wall-clock of unknown zone.' style='color:#e0a030;'>&#9888;</span>" : ""}</div>
                     <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
                 </div>
                 ${getPreviewHtml(item, false)}
@@ -725,6 +921,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             polylineLayer = L.polyline(latlngs, {color: "#e94560", weight: 3}).addTo(map);
           }
         }
+
+        // Flag any evidence outside the imported offline map's coverage
+        checkOfflineCoverage();
       }
 
       // --- Toast Logic ---
@@ -789,12 +988,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const data = lastScanData;
         if (data.length === 0) return;
 
+        const tzStr = (item) => item.time && item.time !== "Unknown Time"
+          ? (item.timezoneKnown ? `UTC${item.timezoneOffset || ""}` : "unknown") : "";
+
         if (format === "csv") {
           // Quote every text field so paths and device names with commas survive
           const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-          const rows = ["#,File,Full Path,Latitude,Longitude,Altitude (m),Timestamp,Device,Heading (deg),Speed (km/h),Lens,Software"];
+          const rows = ["#,File,Full Path,SHA-256,Latitude,Longitude,Altitude (m),Timestamp,Timeline Field,Timezone,Make,Model,Device,Heading (deg),Speed (km/h),Lens,Software"];
           data.forEach((item, i) => {
-            rows.push([i + 1, esc(item.name), esc(item.fullPath), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
+            rows.push([i + 1, esc(item.name), esc(item.fullPath), esc(item.sha256 || (item.hashError ? "HASH FAILED: " + item.hashError : "")), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.timelineField), esc(tzStr(item)), esc(item.make), esc(item.model), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
           });
           triggerDownload(exportFilename("csv"), "text/csv", rows.join("\r\n"));
         } else if (format === "geojson") {
@@ -807,7 +1009,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 // GeoJSON is [longitude, latitude, (altitude)]
                 coordinates: item.alt != null ? [item.lon, item.lat, item.alt] : [item.lon, item.lat],
               },
-              properties: {index: i + 1, name: item.name, path: item.fullPath, time: item.time, device: item.camera, heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software},
+              properties: {
+                index: i + 1, name: item.name, path: item.fullPath, sha256: item.sha256 || null,
+                hashError: item.hashError || null, altitude: item.alt,
+                time: item.time, timelineField: item.timelineField,
+                timezoneKnown: item.timezoneKnown, timezoneOffset: item.timezoneOffset,
+                timestamps: item.timestamps || null,
+                make: item.make, model: item.model, device: item.camera,
+                heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software,
+              },
             })),
           };
           triggerDownload(exportFilename("geojson"), "application/geo+json", JSON.stringify(collection, null, 2));
@@ -815,7 +1025,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           const escXml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
           let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>GeoForensics Export</name>\n`;
           data.forEach((item, i) => {
-            let desc = `Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}`;
+            let desc = `Time: ${escXml(item.time)}${tzStr(item) ? " (" + escXml(tzStr(item)) + ")" : ""}`;
+            if (item.timelineField) desc += ` [${escXml(item.timelineField)}]`;
+            desc += `\nDevice: ${escXml(item.camera)}\nSHA-256: ${escXml(item.sha256 || (item.hashError ? "FAILED: " + item.hashError : "n/a"))}\nPath: ${escXml(item.fullPath)}`;
+            if (item.alt != null) desc += `\nAltitude: ${item.alt.toFixed(1)} m`;
             if (item.heading != null) desc += `\nHeading: ${item.heading.toFixed(0)}° (${degToCompass(item.heading)})`;
             if (item.speedKmh != null) desc += `\nSpeed: ${item.speedKmh.toFixed(1)} km/h`;
             if (item.lens) desc += `\nLens: ${escXml(item.lens)}`;
@@ -824,6 +1037,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           });
           kml += `</Document>\n</kml>\n`;
           triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
+        } else if (format === "manifest") {
+          triggerDownload(exportFilename("json"), "application/json", buildForensicManifest(data));
         } else if (format === "report") {
           let thumbnails = null;
           if (document.getElementById("reportThumbsToggle").checked) {
@@ -835,7 +1050,81 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
 
         document.getElementById("exportModal").style.display = "none";
-        showToast(`Export downloaded (${format === "report" ? "Case Report" : format.toUpperCase()}).`);
+        const label = format === "report" ? "Case Report" : format === "manifest" ? "Forensic Manifest" : format.toUpperCase();
+        showToast(`Export downloaded (${label}).`);
+      }
+
+      // --- Scan provenance (shared by the case report and forensic manifest) ---
+
+      const TZ_CAVEAT = "EXIF timestamps without an offset are local wall-clock times of unknown timezone. GeoForensics does not assume UTC or system-local time; timeline ordering is by wall-clock value only. Timestamps marked timezone-known carry an explicit EXIF offset.";
+
+      function activeFilters() {
+        const device = document.getElementById("filterDevice").value;
+        const from = document.getElementById("filterFrom").value;
+        const to = document.getElementById("filterTo").value;
+        const list = [];
+        if (device && device !== "__all__") list.push({field: "device", value: device});
+        if (from) list.push({field: "dateFrom", value: from});
+        if (to) list.push({field: "dateTo", value: to});
+        return list;
+      }
+
+      function buildProvenance(exportedCount) {
+        const stats = fullScanStats || {};
+        const filters = activeFilters();
+        return {
+          generatedAt: new Date().toISOString(),
+          appVersion: toolVersions.appVersion || "unknown",
+          exiftoolVersion: toolVersions.exiftoolVersion || "unknown",
+          scanStartedAt: scanStartedAt,
+          scanFinishedAt: scanFinishedAt,
+          evidenceFolder: scanFolder,
+          completeness: {
+            totalFiles: stats.totalFiles ?? null,
+            examined: stats.processed ?? null,
+            withLocation: stats.withLocation ?? null,
+            withoutLocation: stats.noLocation ?? null,
+            unreadable: stats.unreadable ?? null,
+            hashFailures: stats.hashFailures ?? null,
+          },
+          scanCancelledPartial: !!stats.aborted,
+          filtersActive: filters.length > 0,
+          filters: filters,
+          exportedEvidenceCount: exportedCount,
+          airGappedMode: airGappedMode,
+          offlineMap: offlineMapMeta ? {
+            name: offlineMapMeta.name, format: offlineMapMeta.format,
+            bounds: offlineMapMeta.bounds, minzoom: offlineMapMeta.minzoom, maxzoom: offlineMapMeta.maxzoom,
+          } : null,
+          timestampCaveat: TZ_CAVEAT,
+        };
+      }
+
+      // --- Forensic Manifest (stable, human-readable JSON) ---
+
+      function buildForensicManifest(data) {
+        return JSON.stringify({
+          manifestVersion: 1,
+          tool: "GeoForensics",
+          provenance: buildProvenance(data.length),
+          evidence: data.map((item, i) => ({
+            index: i + 1,
+            name: item.name,
+            path: item.fullPath,
+            sha256: item.sha256 || null,
+            hashError: item.hashError || null,
+            gps: {latitude: item.lat, longitude: item.lon, altitude: item.alt},
+            timelineField: item.timelineField,
+            timelineTimestamp: item.time && item.time !== "Unknown Time" ? item.time : null,
+            timezoneKnown: item.timezoneKnown,
+            timezoneOffset: item.timezoneOffset,
+            timestamps: item.timestamps || null,
+            device: {make: item.make, model: item.model, lens: item.lens},
+            software: item.software,
+            heading: item.heading,
+            speedKmh: item.speedKmh,
+          })),
+        }, null, 2);
       }
 
       // --- Self-contained HTML Case Report ---
@@ -923,32 +1212,30 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       function buildCaseReport(data, thumbnails) {
         const esc = escapeHTML;
+        const p = buildProvenance(data.length);
         const stats = fullScanStats;
-        const generated = new Date().toLocaleString();
-        const folder = document.getElementById("folderPath").value;
 
-        // Describe any active filters so a partial view is never mistaken
-        // for the full evidence set
-        const device = document.getElementById("filterDevice").value;
-        const from = document.getElementById("filterFrom").value;
-        const to = document.getElementById("filterTo").value;
-        const filters = [];
-        if (device && device !== "__all__") filters.push(`device = ${device}`);
-        if (from) filters.push(`from ${from}`);
-        if (to) filters.push(`to ${to}`);
-        const viewDesc = filters.length > 0
-          ? `Filtered: ${data.length} of ${fullScanData.length} evidence files shown (${filters.join(", ")})`
+        const viewDesc = p.filtersActive
+          ? `Filtered: ${data.length} of ${fullScanData.length} evidence files shown (${p.filters.map((f) => `${f.field} = ${f.value}`).join(", ")})`
           : `All ${data.length} evidence files from the scan`;
 
-        const scanStatus = stats && stats.aborted
+        const scanStatus = p.scanCancelledPartial
           ? `CANCELLED — partial scan (${stats.processed} of ${stats.totalFiles} files examined)`
           : "Complete";
+
+        const tzCell = (item) => {
+          if (!item.time || item.time === "Unknown Time") return "—";
+          return item.timezoneKnown
+            ? `UTC${esc(item.timezoneOffset || "")}`
+            : `<span style="color:#b45309;">unknown &#9888;</span>`;
+        };
 
         const rows = data.map((item) => `
       <tr>
         <td>${item.originalIndex + 1}</td>
-        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
-        <td>${esc(item.time)}</td>
+        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div><div class="hash">SHA-256: ${item.sha256 ? esc(item.sha256) : `<span style="color:#b91c1c;">FAILED${item.hashError ? " (" + esc(item.hashError) + ")" : ""}</span>`}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
+        <td>${esc(item.time)}${item.timelineField ? `<div class="path">${esc(item.timelineField)}</div>` : ""}</td>
+        <td>${tzCell(item)}</td>
         <td>${esc(item.camera)}${item.software ? `<div class="path">Software: ${esc(item.software)}</div>` : ""}</td>
         <td class="num">${item.lat}</td>
         <td class="num">${item.lon}</td>
@@ -958,13 +1245,25 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       </tr>`).join("");
 
         const metaRow = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
-        let metaRows = metaRow("Generated", esc(generated)) + metaRow("Evidence folder", esc(folder)) + metaRow("Scan status", esc(scanStatus)) + metaRow("View", esc(viewDesc));
+        let metaRows = "";
+        metaRows += metaRow("GeoForensics version", esc(p.appVersion));
+        metaRows += metaRow("ExifTool version", esc(p.exiftoolVersion));
+        metaRows += metaRow("Report generated", esc(new Date(p.generatedAt).toLocaleString()) + ` <span class="path">(${esc(p.generatedAt)})</span>`);
+        metaRows += metaRow("Scan started", p.scanStartedAt ? esc(new Date(p.scanStartedAt).toLocaleString()) : "—");
+        metaRows += metaRow("Scan completed", p.scanFinishedAt ? esc(new Date(p.scanFinishedAt).toLocaleString()) : "—");
+        metaRows += metaRow("Evidence folder", esc(p.evidenceFolder));
+        metaRows += metaRow("Scan status", esc(scanStatus));
+        metaRows += metaRow("View", esc(viewDesc));
         if (stats) {
-          metaRows += metaRow("Files examined", `${stats.processed} of ${stats.totalFiles}`);
+          metaRows += metaRow("Files discovered", String(stats.totalFiles));
+          metaRows += metaRow("Files examined", String(stats.processed));
           metaRows += metaRow("With location data", String(stats.withLocation));
           metaRows += metaRow("Without location data", String(stats.noLocation));
           metaRows += metaRow("Unreadable", String(stats.unreadable));
+          metaRows += metaRow("Hash failures", String(stats.hashFailures ?? 0));
         }
+        metaRows += metaRow("Air-Gapped Mode", p.airGappedMode ? "ON (no outbound network)" : "off");
+        metaRows += metaRow("Offline basemap", p.offlineMap ? esc(p.offlineMap.name || "imported MBTiles") + ` <span class="path">(zoom ${p.offlineMap.minzoom}–${p.offlineMap.maxzoom})</span>` : "none");
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -981,8 +1280,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   .meta th { width: 180px; }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .path { color: #64748b; font-size: 11px; word-break: break-all; }
+  .hash { color: #475569; font-size: 10px; font-family: monospace; word-break: break-all; margin-top: 2px; }
   .thumb { display: block; max-width: 160px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 3px; }
   .caption { color: #64748b; font-size: 12px; margin-top: 6px; }
+  .caveat { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 4px; padding: 10px 14px; font-size: 12px; color: #78350f; margin-top: 16px; }
   svg { width: 100%; height: auto; }
   footer { margin-top: 40px; color: #64748b; font-size: 12px; border-top: 1px solid #cbd5e1; padding-top: 10px; }
   @media print {
@@ -999,6 +1300,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <table class="meta">${metaRows}
   </table>
 
+  <div class="caveat"><b>Timestamp / timezone note:</b> ${esc(p.timestampCaveat)} Timestamps shown as "unknown" have no embedded EXIF offset and must not be treated as UTC or local system time.</div>
+
   <h2>Coordinate Plot</h2>
   ${buildReportMapSvg(data)}
   <div class="caption">Relative plot of evidence coordinates in chronological order (equirectangular projection, not to scale with any base map). Numbers match the evidence table below. The dashed line traces chronological movement.</div>
@@ -1006,13 +1309,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <h2>Evidence (chronological)</h2>
   <table>
     <thead>
-      <tr><th>#</th><th>File</th><th>Timestamp</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
+      <tr><th>#</th><th>File / SHA-256</th><th>Timestamp</th><th>Timezone</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
     </thead>
     <tbody>${rows}
     </tbody>
   </table>
 
-  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; the map links require internet access.</footer>
+  <div class="caption"><b>Source files:</b> GeoForensics analyzes metadata embedded in the files supplied to it. When exporting evidence from forensic suites such as Magnet AXIOM, export the original/native file whenever possible &mdash; location information stored only in a separate case artifact or database cannot be recovered from an exported image that does not itself contain that metadata.</div>
+
+  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; only the per-row map links require internet access.</footer>
 </body>
 </html>`;
       }
@@ -1036,6 +1341,27 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       <div class="modal-content">
         <span id="closeSupportBtn" class="close-btn">&times;</span>
         <h2>Support & Information</h2>
+
+        <div class="modal-section">
+          <h3>Working with forensic exports (Magnet AXIOM &amp; others)</h3>
+          <p style="font-size: 0.92em; color: #b8b8b8; line-height: 1.5;">
+            GeoForensics analyzes the metadata <b>embedded in the files you supply</b>. When exporting evidence from a forensic suite such as Magnet AXIOM, export the <b>original / native file</b> whenever possible. Location information that exists only in a separate case artifact or database &mdash; not inside the media file itself &mdash; cannot be recovered by GeoForensics from an exported image that does not contain that metadata. GeoForensics does not parse AXIOM case files; it reads the exported originals.
+          </p>
+        </div>
+
+        <div class="modal-section">
+          <h3>Timestamps &amp; timezones</h3>
+          <p style="font-size: 0.92em; color: #b8b8b8; line-height: 1.5;">
+            Many EXIF timestamps carry <b>no timezone</b>. GeoForensics never assumes UTC or your system time: such timestamps are shown as a local wall-clock of <b>unknown</b> timezone (marked &#9888;), while timestamps with a genuine embedded offset show it (e.g. UTC+02:00). The timeline is ordered by wall-clock value, deterministically. The field used (DateTimeOriginal / CreateDate / ModifyDate) and all raw values are preserved in exports.
+          </p>
+        </div>
+
+        <div class="modal-section">
+          <h3>Offline / air-gapped use</h3>
+          <p style="font-size: 0.92em; color: #b8b8b8; line-height: 1.5;">
+            With <b>Air-Gapped Mode</b> on (the default), no data leaves the workstation: no update checks, no online map tiles, no outbound requests of any kind. Import a local <b>MBTiles</b> map package in Settings to show evidence on a basemap without a connection. Every file gets a <b>SHA-256</b>, and the Case Report / Forensic Manifest record full scan provenance.
+          </p>
+        </div>
 
         <div class="modal-section">
           <h3>Official Links</h3>
@@ -1084,6 +1410,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('csv')">CSV &mdash; spreadsheets & reports</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('geojson')">GeoJSON &mdash; GIS software (QGIS, ArcGIS)</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
+        <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('manifest')">Forensic Manifest &mdash; JSON (SHA-256, timestamps, provenance)</button>
         <button class="browse-btn" style="width: 100%;" onclick="exportResults('report')">Case Report &mdash; self-contained HTML (print to PDF)</button>
         <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.85em; color: #a0a0a0; cursor: pointer;">
           <input type="checkbox" id="reportThumbsToggle" style="width: 15px; height: 15px;" />
@@ -1098,13 +1425,34 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <h2>Settings</h2>
 
         <div class="modal-section">
+          <h3>Air-Gapped Mode</h3>
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="airGapToggle" style="width: 18px; height: 18px;" />
+            Enable Air-Gapped Mode
+          </label>
+          <p style="font-size: 0.9em; color: #888; margin-top: 5px;">
+            <b>On by default and recommended for forensic workstations.</b> Blocks all outbound network requests &mdash; update checks, GitHub, and every online map tile server. Only the local map server and imported offline maps are used. Turn this off deliberately if you need online basemaps or updates on a connected machine.
+          </p>
+        </div>
+
+        <div class="modal-section">
+          <h3>Offline Maps</h3>
+          <div id="offlineMapStatus" style="font-size: 0.9em; color: #888; margin-bottom: 10px;">No offline map imported.</div>
+          <button id="importMapBtn" class="browse-btn" style="width: 100%; margin-bottom: 8px;">Import Map Package (.mbtiles)</button>
+          <button id="removeMapBtn" class="browse-btn" style="width: 100%; display: none;">Remove Offline Map</button>
+          <p style="font-size: 0.9em; color: #888; margin-top: 8px;">
+            Import a raster <b>MBTiles</b> map package to display evidence on a fully offline basemap. The file is read from where it lives &mdash; it is not copied &mdash; so keep it on the workstation. Evidence points outside the map's coverage are flagged.
+          </p>
+        </div>
+
+        <div class="modal-section">
           <h3>Updates</h3>
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
             <input type="checkbox" id="autoUpdateToggle" style="width: 18px; height: 18px;" />
             Enable Auto-Updates
           </label>
           <p style="font-size: 0.9em; color: #888; margin-top: 5px;">
-            Automatically check for new releases on GitHub and prompt before downloading.
+            Off by default. Automatically check for new releases on GitHub and prompt before downloading. <b>Has no effect while Air-Gapped Mode is on</b> &mdash; update checks stay fully suppressed.
           </p>
         </div>
 
@@ -1207,13 +1555,31 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         settingsModal.style.display = "none";
       };
 
-      function applyTheme(isLight, overrideMap = false) {
+      function applyTheme(isLight) {
         if (isLight) {
           document.body.classList.add("light-theme");
         } else {
           document.body.classList.remove("light-theme");
         }
-        setMapTheme(isLight, overrideMap);
+        setMapTheme(isLight);
+      }
+
+      // Reflects Air-Gapped Mode in the header badge and pushes the policy to
+      // the Electron main process (which enforces the outbound-request block).
+      function applyAirGapState() {
+        const badge = document.getElementById("airGapBadge");
+        if (airGappedMode) {
+          badge.classList.remove("online");
+          badge.innerHTML = "&#9679; AIR-GAPPED";
+          badge.title = "Air-Gapped Mode is ON: no outbound network requests are made.";
+        } else {
+          badge.classList.add("online");
+          badge.innerHTML = "&#9679; ONLINE";
+          badge.title = "Air-Gapped Mode is OFF: online map tiles and update checks are permitted.";
+        }
+        if (window.electronAPI && window.electronAPI.setNetworkPolicy) {
+          window.electronAPI.setNetworkPolicy(airGappedMode);
+        }
       }
 
       // Boot Loader for Settings
@@ -1239,8 +1605,14 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           document.body.classList.add(`os-${platform}`);
         }
 
-        // Check localStorage (default to true if not set)
-        const isAutoUpdateEnabled = localStorage.getItem("autoUpdate") !== "false";
+        // Air-Gapped Mode: default ON. Push the policy to main before anything
+        // could make a request, then reflect it in the header badge.
+        airGappedMode = localStorage.getItem("airGapped") !== "false";
+        document.getElementById("airGapToggle").checked = airGappedMode;
+        applyAirGapState();
+
+        // Auto-updates default OFF (was previously on by default)
+        const isAutoUpdateEnabled = localStorage.getItem("autoUpdate") === "true";
         autoUpdateToggle.checked = isAutoUpdateEnabled;
 
         const isPreviewEnabled = localStorage.getItem("imagePreviews") === "true";
@@ -1252,22 +1624,44 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
         applyZoomSettings(savedPrecision);
 
-        // Trigger update check on boot
-        if (window.electronAPI) {
-          window.electronAPI.triggerUpdateCheck(isAutoUpdateEnabled ? "true" : "false");
+        // Trigger update check on boot only when online AND auto-update is on.
+        // Air-Gapped Mode suppresses this both here and in the main process.
+        if (window.electronAPI && !airGappedMode && isAutoUpdateEnabled) {
+          window.electronAPI.triggerUpdateCheck("true");
         }
 
         const isLightMode = localStorage.getItem("lightMode") === "true";
         themeToggle.checked = isLightMode;
-        applyTheme(isLightMode);
+        document.body.classList.toggle("light-theme", isLightMode);
+
+        // Load tool versions (app + ExifTool) for report/manifest provenance
+        fetch("/api/versions").then((r) => r.json()).then((v) => {
+          if (v && v.success) toolVersions = {appVersion: v.appVersion, exiftoolVersion: v.exiftoolVersion};
+        }).catch(() => { /* provenance will show "unknown" */ });
+
+        // Restore an imported offline map (by stored path), then build the
+        // layer control accounting for air-gap state. Done after air-gap is set.
+        restoreOfflineMap().finally(() => rebuildMapLayers());
       }
 
       themeToggle.addEventListener("change", (e) => {
         const isChecked = e.target.checked;
         localStorage.setItem("lightMode", isChecked ? "true" : "false");
+        applyTheme(isChecked);
+      });
 
-        // Passing 'true' to force the map to sync with the toggle selection
-        applyTheme(isChecked, true);
+      // Air-Gapped Mode toggle: persist, re-apply the network policy, and
+      // rebuild the map layers (adding/removing online basemaps). No rescan.
+      document.getElementById("airGapToggle").addEventListener("change", (e) => {
+        airGappedMode = e.target.checked;
+        localStorage.setItem("airGapped", airGappedMode ? "true" : "false");
+        applyAirGapState();
+        rebuildMapLayers();
+        if (!airGappedMode) {
+          showToast("Air-Gapped Mode is OFF. Online map tiles and update checks are now permitted.", true);
+        } else {
+          showToast("Air-Gapped Mode is ON. All outbound network requests are blocked.");
+        }
       });
 
       // Listen for Preview Toggle
@@ -1308,6 +1702,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       });
 
       document.addEventListener("DOMContentLoaded", () => {
+        wireOfflineMapButtons();
         loadUserSettings();
       });
 
