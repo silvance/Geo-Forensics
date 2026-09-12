@@ -53,10 +53,16 @@
       "!dist/electron/**/*.js"
     ],
     "win": {
-      "icon": "img/icon.ico",
+      "icon": "img/geoforensics.ico",
       "target": [
         {
           "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -64,21 +70,22 @@
       ]
     },
     "mac": {
-      "icon": "img/iconMAC.png",
+      "icon": "img/geoforensics.png",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "linux": {
-      "icon": "img/Refloow-Geo-Forensics.png",
+      "icon": "img/geoforensics.png",
       "target": [
         "AppImage",
         "deb",
         "snap"
       ],
       "category": "Utility",
-      "description": "GeoForensics: batch image & video geolocation forensics tool."
+      "description": "GeoForensics: batch image & video geolocation forensics tool.",
+      "maintainer": "Silvance <silvance1@gmail.com>"
     },
     "snap": {
       "summary": "Free batch image & video geolocation digital forensics tool",
@@ -99,11 +106,15 @@
       "oneClick": false,
       "license": "LICENSE",
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "img/icon.ico",
+      "installerIcon": "img/geoforensics.ico",
       "shortcutName": "GeoForensics",
       "createDesktopShortcut": true,
       "perMachine": false,
-      "uninstallDisplayName": "GeoForensics"
+      "uninstallDisplayName": "GeoForensics",
+      "artifactName": "GeoForensics-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "GeoForensics-Portable-${version}.exe"
     }
   },
   "contributors": [

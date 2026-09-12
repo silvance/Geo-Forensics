@@ -59,10 +59,12 @@ The test suite covers the scanning engine (recursive walking, symlink-loop prote
 ### Packaging
 
 ```bash
-npm run package          # Windows (NSIS installer)
+npm run package          # Windows (NSIS installer + portable single-file exe)
 npm run package:mac      # macOS (dmg + zip)
 npm run package:linux    # Linux (AppImage, deb, snap)
 ```
+
+Windows builds bundle everything — Electron, the local server, ExifTool, and Leaflet — so nothing needs to be installed separately. The **portable exe** runs directly from a single file (USB-stick friendly); the **installer** adds shortcuts and auto-update support. The `Windows Release` GitHub Actions workflow builds both automatically: run it from the Actions tab, or push a `v*` tag to build and attach them to a draft GitHub release.
 
 ## 📖 Usage
 
