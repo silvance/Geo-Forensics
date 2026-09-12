@@ -431,6 +431,11 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let lastScanData = []; // Currently displayed (possibly filtered) results, used by the export feature
       let fullScanData = []; // All chronologically sorted results of the last scan
       let fullScanStats = null;
+      // Provenance captured per scan, for the case report and forensic manifest
+      let scanStartedAt = null;
+      let scanFinishedAt = null;
+      let scanFolder = "";
+      let toolVersions = { appVersion: null, exiftoolVersion: null };
       let currentScanId = null;
       let scanEventSource = null;
 
@@ -497,6 +502,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
 
         isScanning = true;
+        scanStartedAt = new Date().toISOString();
+        scanFinishedAt = null;
+        scanFolder = pathInput;
 
         document.getElementById("folderPath").classList.add("scanning-active");
         const analyseBtn = document.getElementById("analyseBtn");
@@ -559,6 +567,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const statusMsg = document.getElementById("status-msg");
         const listDiv = document.getElementById("results-list");
 
+        scanFinishedAt = new Date().toISOString();
         listDiv.innerHTML = "";
 
         if (data.length === 0) {
@@ -607,22 +616,36 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         return dirs[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
       }
 
+      // Short human label for a timestamp's timezone status
+      function tzLabel(item) {
+        if (!item.time || item.time === "Unknown Time") return "";
+        return item.timezoneKnown
+          ? ` (UTC${escapeHTML(item.timezoneOffset || "")})`
+          : ` <span title="This EXIF timestamp has no timezone. It is a local wall-clock time of unknown zone; it is NOT assumed to be UTC or your system time.">(timezone unknown)</span>`;
+      }
+
       // Shared metadata block for map popups; optional fields only appear
       // when the file actually recorded them
       function buildItemDetailsHtml(item) {
-        let html = `<b>File:</b> ${escapeHTML(item.name)}<br><b>Time:</b> ${escapeHTML(item.time)}<br><b>Device:</b> ${escapeHTML(item.camera)}`;
+        const fieldNote = item.timelineField ? ` <span style="color:#888;">[${escapeHTML(item.timelineField)}]</span>` : "";
+        let html = `<b>File:</b> ${escapeHTML(item.name)}<br><b>Time:</b> ${escapeHTML(item.time)}${tzLabel(item)}${fieldNote}<br><b>Device:</b> ${escapeHTML(item.camera)}`;
         if (item.alt != null) html += `<br><b>Altitude:</b> ${item.alt.toFixed(1)} m`;
         if (item.heading != null) html += `<br><b>Heading:</b> ${item.heading.toFixed(0)}&deg; (${degToCompass(item.heading)})`;
         if (item.speedKmh != null) html += `<br><b>Speed:</b> ${item.speedKmh.toFixed(1)} km/h`;
         if (item.lens) html += `<br><b>Lens:</b> ${escapeHTML(item.lens)}`;
         if (item.software) html += `<br><b>Software:</b> ${escapeHTML(item.software)}`;
+        if (item.sha256) html += `<br><b>SHA-256:</b> <span style="font-family:monospace; font-size:11px; word-break:break-all;">${escapeHTML(item.sha256)}</span>`;
+        else if (item.hashError) html += `<br><b>SHA-256:</b> <span style="color:#e94560;">failed (${escapeHTML(item.hashError)})</span>`;
         return html;
       }
 
-      // EXIF timestamps look like "2026:01:15 10:30:00"; returns 0 when unknown
+      // Parses an EXIF timestamp ("2026:01:15 10:30:00") to a sortable number.
+      // Any trailing timezone offset is stripped first, so ordering is by
+      // wall-clock only: deterministic and free of timezone assumptions.
       function parseExifTimestamp(timeStr) {
         if (!timeStr || timeStr === "Unknown Time") return 0;
-        const formatted = timeStr.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
+        const naive = String(timeStr).replace(/([+-]\d{2}:?\d{2}|Z)$/, "").trim();
+        const formatted = naive.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
         const timestamp = Date.parse(formatted);
         return isNaN(timestamp) ? 0 : timestamp;
       }
@@ -874,7 +897,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             div.innerHTML = `
                 <div class="evidence-info">
                     <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
-                    <div class="evidence-meta">📅 ${escapeHTML(item.time)}</div>
+                    <div class="evidence-meta">📅 ${escapeHTML(item.time)}${item.time && item.time !== "Unknown Time" && !item.timezoneKnown ? " <span title='EXIF timestamp has no timezone; local wall-clock of unknown zone.' style='color:#e0a030;'>&#9888;</span>" : ""}</div>
                     <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
                 </div>
                 ${getPreviewHtml(item, false)}
@@ -965,12 +988,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const data = lastScanData;
         if (data.length === 0) return;
 
+        const tzStr = (item) => item.time && item.time !== "Unknown Time"
+          ? (item.timezoneKnown ? `UTC${item.timezoneOffset || ""}` : "unknown") : "";
+
         if (format === "csv") {
           // Quote every text field so paths and device names with commas survive
           const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-          const rows = ["#,File,Full Path,Latitude,Longitude,Altitude (m),Timestamp,Device,Heading (deg),Speed (km/h),Lens,Software"];
+          const rows = ["#,File,Full Path,SHA-256,Latitude,Longitude,Altitude (m),Timestamp,Timeline Field,Timezone,Make,Model,Device,Heading (deg),Speed (km/h),Lens,Software"];
           data.forEach((item, i) => {
-            rows.push([i + 1, esc(item.name), esc(item.fullPath), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
+            rows.push([i + 1, esc(item.name), esc(item.fullPath), esc(item.sha256 || (item.hashError ? "HASH FAILED: " + item.hashError : "")), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.timelineField), esc(tzStr(item)), esc(item.make), esc(item.model), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
           });
           triggerDownload(exportFilename("csv"), "text/csv", rows.join("\r\n"));
         } else if (format === "geojson") {
@@ -983,7 +1009,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 // GeoJSON is [longitude, latitude, (altitude)]
                 coordinates: item.alt != null ? [item.lon, item.lat, item.alt] : [item.lon, item.lat],
               },
-              properties: {index: i + 1, name: item.name, path: item.fullPath, time: item.time, device: item.camera, heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software},
+              properties: {
+                index: i + 1, name: item.name, path: item.fullPath, sha256: item.sha256 || null,
+                hashError: item.hashError || null, altitude: item.alt,
+                time: item.time, timelineField: item.timelineField,
+                timezoneKnown: item.timezoneKnown, timezoneOffset: item.timezoneOffset,
+                timestamps: item.timestamps || null,
+                make: item.make, model: item.model, device: item.camera,
+                heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software,
+              },
             })),
           };
           triggerDownload(exportFilename("geojson"), "application/geo+json", JSON.stringify(collection, null, 2));
@@ -991,7 +1025,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           const escXml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
           let kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>GeoForensics Export</name>\n`;
           data.forEach((item, i) => {
-            let desc = `Time: ${escXml(item.time)}\nDevice: ${escXml(item.camera)}\nPath: ${escXml(item.fullPath)}`;
+            let desc = `Time: ${escXml(item.time)}${tzStr(item) ? " (" + escXml(tzStr(item)) + ")" : ""}`;
+            if (item.timelineField) desc += ` [${escXml(item.timelineField)}]`;
+            desc += `\nDevice: ${escXml(item.camera)}\nSHA-256: ${escXml(item.sha256 || (item.hashError ? "FAILED: " + item.hashError : "n/a"))}\nPath: ${escXml(item.fullPath)}`;
+            if (item.alt != null) desc += `\nAltitude: ${item.alt.toFixed(1)} m`;
             if (item.heading != null) desc += `\nHeading: ${item.heading.toFixed(0)}° (${degToCompass(item.heading)})`;
             if (item.speedKmh != null) desc += `\nSpeed: ${item.speedKmh.toFixed(1)} km/h`;
             if (item.lens) desc += `\nLens: ${escXml(item.lens)}`;
@@ -1000,6 +1037,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           });
           kml += `</Document>\n</kml>\n`;
           triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
+        } else if (format === "manifest") {
+          triggerDownload(exportFilename("json"), "application/json", buildForensicManifest(data));
         } else if (format === "report") {
           let thumbnails = null;
           if (document.getElementById("reportThumbsToggle").checked) {
@@ -1011,7 +1050,81 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         }
 
         document.getElementById("exportModal").style.display = "none";
-        showToast(`Export downloaded (${format === "report" ? "Case Report" : format.toUpperCase()}).`);
+        const label = format === "report" ? "Case Report" : format === "manifest" ? "Forensic Manifest" : format.toUpperCase();
+        showToast(`Export downloaded (${label}).`);
+      }
+
+      // --- Scan provenance (shared by the case report and forensic manifest) ---
+
+      const TZ_CAVEAT = "EXIF timestamps without an offset are local wall-clock times of unknown timezone. GeoForensics does not assume UTC or system-local time; timeline ordering is by wall-clock value only. Timestamps marked timezone-known carry an explicit EXIF offset.";
+
+      function activeFilters() {
+        const device = document.getElementById("filterDevice").value;
+        const from = document.getElementById("filterFrom").value;
+        const to = document.getElementById("filterTo").value;
+        const list = [];
+        if (device && device !== "__all__") list.push({field: "device", value: device});
+        if (from) list.push({field: "dateFrom", value: from});
+        if (to) list.push({field: "dateTo", value: to});
+        return list;
+      }
+
+      function buildProvenance(exportedCount) {
+        const stats = fullScanStats || {};
+        const filters = activeFilters();
+        return {
+          generatedAt: new Date().toISOString(),
+          appVersion: toolVersions.appVersion || "unknown",
+          exiftoolVersion: toolVersions.exiftoolVersion || "unknown",
+          scanStartedAt: scanStartedAt,
+          scanFinishedAt: scanFinishedAt,
+          evidenceFolder: scanFolder,
+          completeness: {
+            totalFiles: stats.totalFiles ?? null,
+            examined: stats.processed ?? null,
+            withLocation: stats.withLocation ?? null,
+            withoutLocation: stats.noLocation ?? null,
+            unreadable: stats.unreadable ?? null,
+            hashFailures: stats.hashFailures ?? null,
+          },
+          scanCancelledPartial: !!stats.aborted,
+          filtersActive: filters.length > 0,
+          filters: filters,
+          exportedEvidenceCount: exportedCount,
+          airGappedMode: airGappedMode,
+          offlineMap: offlineMapMeta ? {
+            name: offlineMapMeta.name, format: offlineMapMeta.format,
+            bounds: offlineMapMeta.bounds, minzoom: offlineMapMeta.minzoom, maxzoom: offlineMapMeta.maxzoom,
+          } : null,
+          timestampCaveat: TZ_CAVEAT,
+        };
+      }
+
+      // --- Forensic Manifest (stable, human-readable JSON) ---
+
+      function buildForensicManifest(data) {
+        return JSON.stringify({
+          manifestVersion: 1,
+          tool: "GeoForensics",
+          provenance: buildProvenance(data.length),
+          evidence: data.map((item, i) => ({
+            index: i + 1,
+            name: item.name,
+            path: item.fullPath,
+            sha256: item.sha256 || null,
+            hashError: item.hashError || null,
+            gps: {latitude: item.lat, longitude: item.lon, altitude: item.alt},
+            timelineField: item.timelineField,
+            timelineTimestamp: item.time && item.time !== "Unknown Time" ? item.time : null,
+            timezoneKnown: item.timezoneKnown,
+            timezoneOffset: item.timezoneOffset,
+            timestamps: item.timestamps || null,
+            device: {make: item.make, model: item.model, lens: item.lens},
+            software: item.software,
+            heading: item.heading,
+            speedKmh: item.speedKmh,
+          })),
+        }, null, 2);
       }
 
       // --- Self-contained HTML Case Report ---
@@ -1099,32 +1212,30 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       function buildCaseReport(data, thumbnails) {
         const esc = escapeHTML;
+        const p = buildProvenance(data.length);
         const stats = fullScanStats;
-        const generated = new Date().toLocaleString();
-        const folder = document.getElementById("folderPath").value;
 
-        // Describe any active filters so a partial view is never mistaken
-        // for the full evidence set
-        const device = document.getElementById("filterDevice").value;
-        const from = document.getElementById("filterFrom").value;
-        const to = document.getElementById("filterTo").value;
-        const filters = [];
-        if (device && device !== "__all__") filters.push(`device = ${device}`);
-        if (from) filters.push(`from ${from}`);
-        if (to) filters.push(`to ${to}`);
-        const viewDesc = filters.length > 0
-          ? `Filtered: ${data.length} of ${fullScanData.length} evidence files shown (${filters.join(", ")})`
+        const viewDesc = p.filtersActive
+          ? `Filtered: ${data.length} of ${fullScanData.length} evidence files shown (${p.filters.map((f) => `${f.field} = ${f.value}`).join(", ")})`
           : `All ${data.length} evidence files from the scan`;
 
-        const scanStatus = stats && stats.aborted
+        const scanStatus = p.scanCancelledPartial
           ? `CANCELLED — partial scan (${stats.processed} of ${stats.totalFiles} files examined)`
           : "Complete";
+
+        const tzCell = (item) => {
+          if (!item.time || item.time === "Unknown Time") return "—";
+          return item.timezoneKnown
+            ? `UTC${esc(item.timezoneOffset || "")}`
+            : `<span style="color:#b45309;">unknown &#9888;</span>`;
+        };
 
         const rows = data.map((item) => `
       <tr>
         <td>${item.originalIndex + 1}</td>
-        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
-        <td>${esc(item.time)}</td>
+        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div><div class="hash">SHA-256: ${item.sha256 ? esc(item.sha256) : `<span style="color:#b91c1c;">FAILED${item.hashError ? " (" + esc(item.hashError) + ")" : ""}</span>`}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
+        <td>${esc(item.time)}${item.timelineField ? `<div class="path">${esc(item.timelineField)}</div>` : ""}</td>
+        <td>${tzCell(item)}</td>
         <td>${esc(item.camera)}${item.software ? `<div class="path">Software: ${esc(item.software)}</div>` : ""}</td>
         <td class="num">${item.lat}</td>
         <td class="num">${item.lon}</td>
@@ -1134,13 +1245,25 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       </tr>`).join("");
 
         const metaRow = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
-        let metaRows = metaRow("Generated", esc(generated)) + metaRow("Evidence folder", esc(folder)) + metaRow("Scan status", esc(scanStatus)) + metaRow("View", esc(viewDesc));
+        let metaRows = "";
+        metaRows += metaRow("GeoForensics version", esc(p.appVersion));
+        metaRows += metaRow("ExifTool version", esc(p.exiftoolVersion));
+        metaRows += metaRow("Report generated", esc(new Date(p.generatedAt).toLocaleString()) + ` <span class="path">(${esc(p.generatedAt)})</span>`);
+        metaRows += metaRow("Scan started", p.scanStartedAt ? esc(new Date(p.scanStartedAt).toLocaleString()) : "—");
+        metaRows += metaRow("Scan completed", p.scanFinishedAt ? esc(new Date(p.scanFinishedAt).toLocaleString()) : "—");
+        metaRows += metaRow("Evidence folder", esc(p.evidenceFolder));
+        metaRows += metaRow("Scan status", esc(scanStatus));
+        metaRows += metaRow("View", esc(viewDesc));
         if (stats) {
-          metaRows += metaRow("Files examined", `${stats.processed} of ${stats.totalFiles}`);
+          metaRows += metaRow("Files discovered", String(stats.totalFiles));
+          metaRows += metaRow("Files examined", String(stats.processed));
           metaRows += metaRow("With location data", String(stats.withLocation));
           metaRows += metaRow("Without location data", String(stats.noLocation));
           metaRows += metaRow("Unreadable", String(stats.unreadable));
+          metaRows += metaRow("Hash failures", String(stats.hashFailures ?? 0));
         }
+        metaRows += metaRow("Air-Gapped Mode", p.airGappedMode ? "ON (no outbound network)" : "off");
+        metaRows += metaRow("Offline basemap", p.offlineMap ? esc(p.offlineMap.name || "imported MBTiles") + ` <span class="path">(zoom ${p.offlineMap.minzoom}–${p.offlineMap.maxzoom})</span>` : "none");
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -1157,8 +1280,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   .meta th { width: 180px; }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .path { color: #64748b; font-size: 11px; word-break: break-all; }
+  .hash { color: #475569; font-size: 10px; font-family: monospace; word-break: break-all; margin-top: 2px; }
   .thumb { display: block; max-width: 160px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 3px; }
   .caption { color: #64748b; font-size: 12px; margin-top: 6px; }
+  .caveat { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 4px; padding: 10px 14px; font-size: 12px; color: #78350f; margin-top: 16px; }
   svg { width: 100%; height: auto; }
   footer { margin-top: 40px; color: #64748b; font-size: 12px; border-top: 1px solid #cbd5e1; padding-top: 10px; }
   @media print {
@@ -1175,6 +1300,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <table class="meta">${metaRows}
   </table>
 
+  <div class="caveat"><b>Timestamp / timezone note:</b> ${esc(p.timestampCaveat)} Timestamps shown as "unknown" have no embedded EXIF offset and must not be treated as UTC or local system time.</div>
+
   <h2>Coordinate Plot</h2>
   ${buildReportMapSvg(data)}
   <div class="caption">Relative plot of evidence coordinates in chronological order (equirectangular projection, not to scale with any base map). Numbers match the evidence table below. The dashed line traces chronological movement.</div>
@@ -1182,13 +1309,15 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <h2>Evidence (chronological)</h2>
   <table>
     <thead>
-      <tr><th>#</th><th>File</th><th>Timestamp</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
+      <tr><th>#</th><th>File / SHA-256</th><th>Timestamp</th><th>Timezone</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
     </thead>
     <tbody>${rows}
     </tbody>
   </table>
 
-  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; the map links require internet access.</footer>
+  <div class="caption"><b>Source files:</b> GeoForensics analyzes metadata embedded in the files supplied to it. When exporting evidence from forensic suites such as Magnet AXIOM, export the original/native file whenever possible &mdash; location information stored only in a separate case artifact or database cannot be recovered from an exported image that does not itself contain that metadata.</div>
+
+  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; only the per-row map links require internet access.</footer>
 </body>
 </html>`;
       }
@@ -1260,6 +1389,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('csv')">CSV &mdash; spreadsheets & reports</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('geojson')">GeoJSON &mdash; GIS software (QGIS, ArcGIS)</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
+        <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('manifest')">Forensic Manifest &mdash; JSON (SHA-256, timestamps, provenance)</button>
         <button class="browse-btn" style="width: 100%;" onclick="exportResults('report')">Case Report &mdash; self-contained HTML (print to PDF)</button>
         <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.85em; color: #a0a0a0; cursor: pointer;">
           <input type="checkbox" id="reportThumbsToggle" style="width: 15px; height: 15px;" />
@@ -1482,6 +1612,11 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const isLightMode = localStorage.getItem("lightMode") === "true";
         themeToggle.checked = isLightMode;
         document.body.classList.toggle("light-theme", isLightMode);
+
+        // Load tool versions (app + ExifTool) for report/manifest provenance
+        fetch("/api/versions").then((r) => r.json()).then((v) => {
+          if (v && v.success) toolVersions = {appVersion: v.appVersion, exiftoolVersion: v.exiftoolVersion};
+        }).catch(() => { /* provenance will show "unknown" */ });
 
         // Restore an imported offline map (by stored path), then build the
         // layer control accounting for air-gap state. Done after air-gap is set.

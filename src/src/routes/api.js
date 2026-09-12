@@ -19,8 +19,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const router = express.Router();
-const { scanDirectory, isServableFile } = require('../utils/scanner');
+const { scanDirectory, isServableFile, getExiftoolVersion } = require('../utils/scanner');
 const mbtiles = require('../utils/mbtiles');
+
+// Application version, read once from package.json, for report/manifest provenance
+let appVersion = 'unknown';
+try { appVersion = require('../../package.json').version; } catch (err) { /* keep default */ }
 
 
 router.post('/scan', async (req, res) => {
@@ -118,6 +122,16 @@ router.get('/image', (req, res) => {
     } else {
         res.status(404).send('Image not found');
     }
+});
+
+// Tool versions for report/manifest provenance. Works without Electron so the
+// case report and forensic manifest can record provenance in any context.
+router.get('/versions', async (req, res) => {
+    res.json({
+        success: true,
+        appVersion,
+        exiftoolVersion: await getExiftoolVersion(),
+    });
 });
 
 // --- Offline map (MBTiles) endpoints ---
