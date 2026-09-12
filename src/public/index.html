@@ -785,7 +785,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         return `geo-forensics-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
       }
 
-      function exportResults(format) {
+      async function exportResults(format) {
         const data = lastScanData;
         if (data.length === 0) return;
 
@@ -825,7 +825,13 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           kml += `</Document>\n</kml>\n`;
           triggerDownload(exportFilename("kml"), "application/vnd.google-earth.kml+xml", kml);
         } else if (format === "report") {
-          triggerDownload(exportFilename("html"), "text/html", buildCaseReport(data));
+          let thumbnails = null;
+          if (document.getElementById("reportThumbsToggle").checked) {
+            document.getElementById("status-msg").innerText = "Generating report thumbnails...";
+            thumbnails = await buildReportThumbnails(data);
+            document.getElementById("status-msg").innerText = `Found ${data.length} evidence.`;
+          }
+          triggerDownload(exportFilename("html"), "text/html", buildCaseReport(data, thumbnails));
         }
 
         document.getElementById("exportModal").style.display = "none";
@@ -833,6 +839,47 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       }
 
       // --- Self-contained HTML Case Report ---
+
+      // Downscales one image to a small JPEG data URI via canvas; resolves
+      // null for videos and anything that fails to load or draw
+      function loadReportThumbnail(item) {
+        return new Promise((resolve) => {
+          if (/\.(mp4|mov|webm|ogg|mkv|avi)$/i.test(item.name)) return resolve(null);
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const MAX_WIDTH = 160;
+              const scale = Math.min(1, MAX_WIDTH / img.naturalWidth);
+              const canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+              canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+              canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL("image/jpeg", 0.7));
+            } catch (err) {
+              resolve(null);
+            }
+          };
+          img.onerror = () => resolve(null);
+          img.src = `/api/image?path=${encodeURIComponent(item.fullPath)}`;
+        });
+      }
+
+      // Loads thumbnails a few at a time so huge evidence sets don't open
+      // hundreds of image requests at once
+      async function buildReportThumbnails(data) {
+        const thumbnails = new Map();
+        let nextIndex = 0;
+
+        async function worker() {
+          while (nextIndex < data.length) {
+            const item = data[nextIndex++];
+            thumbnails.set(item.fullPath, await loadReportThumbnail(item));
+          }
+        }
+
+        await Promise.all(Array.from({length: Math.min(6, data.length)}, worker));
+        return thumbnails;
+      }
 
       // Plots the evidence coordinates as an inline SVG (equirectangular,
       // relative scale) so the report needs no map tiles or internet access
@@ -874,7 +921,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         return svg;
       }
 
-      function buildCaseReport(data) {
+      function buildCaseReport(data, thumbnails) {
         const esc = escapeHTML;
         const stats = fullScanStats;
         const generated = new Date().toLocaleString();
@@ -900,7 +947,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         const rows = data.map((item) => `
       <tr>
         <td>${item.originalIndex + 1}</td>
-        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div></td>
+        <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
         <td>${esc(item.time)}</td>
         <td>${esc(item.camera)}${item.software ? `<div class="path">Software: ${esc(item.software)}</div>` : ""}</td>
         <td class="num">${item.lat}</td>
@@ -934,6 +981,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   .meta th { width: 180px; }
   .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .path { color: #64748b; font-size: 11px; word-break: break-all; }
+  .thumb { display: block; max-width: 160px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 3px; }
   .caption { color: #64748b; font-size: 12px; margin-top: 6px; }
   svg { width: 100%; height: auto; }
   footer { margin-top: 40px; color: #64748b; font-size: 12px; border-top: 1px solid #cbd5e1; padding-top: 10px; }
@@ -1037,6 +1085,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('geojson')">GeoJSON &mdash; GIS software (QGIS, ArcGIS)</button>
         <button class="browse-btn" style="width: 100%; margin-bottom: 10px;" onclick="exportResults('kml')">KML &mdash; Google Earth</button>
         <button class="browse-btn" style="width: 100%;" onclick="exportResults('report')">Case Report &mdash; self-contained HTML (print to PDF)</button>
+        <label style="display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.85em; color: #a0a0a0; cursor: pointer;">
+          <input type="checkbox" id="reportThumbsToggle" style="width: 15px; height: 15px;" />
+          Embed image thumbnails in the case report (larger file)
+        </label>
       </div>
     </div>
 
