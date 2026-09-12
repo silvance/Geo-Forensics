@@ -94,6 +94,15 @@ async function collectFiles(rootPath) {
     return files;
 }
 
+// EXIF speed is km/h unless the ref tag says otherwise (mph or knots);
+// exiftool expands the ref to a human-readable string
+function toKmh(speed, ref) {
+    const unit = String(ref || '').toLowerCase();
+    if (unit.includes('mph')) return speed * 1.609344;
+    if (unit.includes('knot')) return speed * 1.852;
+    return speed;
+}
+
 // options.onProgress: called as (processedCount, totalFiles) after every file
 // options.signal: an AbortSignal; aborting stops the scan early and the
 // partial results are returned with stats.aborted = true
@@ -155,7 +164,13 @@ async function scanDirectory(dirPath, options = {}) {
                         lon: tags.GPSLongitude,
                         alt: typeof tags.GPSAltitude === 'number' ? tags.GPSAltitude : null,
                         time: formattedTime,
-                        camera: tags.Model || tags.Make || "Unknown device"
+                        camera: tags.Model || tags.Make || "Unknown device",
+                        // Extra forensic context, null when the file lacks it
+                        heading: typeof tags.GPSImgDirection === 'number' ? tags.GPSImgDirection : null,
+                        speedKmh: typeof tags.GPSSpeed === 'number' ? toKmh(tags.GPSSpeed, tags.GPSSpeedRef) : null,
+                        lens: tags.LensModel || null,
+                        // Editing software is a tamper indicator worth surfacing
+                        software: tags.Software || null
                     };
                 } else {
                     noLocation++;
