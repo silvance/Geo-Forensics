@@ -24,6 +24,16 @@ const { exiftool } = require('exiftool-vendored');
 // Prevent automatic downloads
 autoUpdater.autoDownload = false
 
+// Silence Chromium's own background network activity (component/variations
+// updates, domain-reliability beacons). This is defense in depth for
+// air-gapped use, on top of the session-level request block below: these are
+// browser-engine phone-homes, not application data, and an offline forensic
+// workstation should never emit them.
+app.commandLine.appendSwitch('disable-component-update');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-domain-reliability');
+app.commandLine.appendSwitch('disable-features', 'ChromeVariations,OptimizationHints');
+
 // --- Air-Gapped Mode network policy ---
 // The application is built for offline / air-gapped forensic workstations, so
 // it starts locked down: no outbound network is permitted until the renderer

@@ -26,7 +26,24 @@
 // an imported file can never mutate itself and no SQL is ever built from input.
 
 const fs = require('fs');
-const { DatabaseSync } = require('node:sqlite');
+
+// node:sqlite is built into modern Node/Electron (Node 22.5+, and the Electron
+// runtime this app ships on). We load it lazily so that on an older runtime
+// that lacks it the rest of the app still starts — only offline maps are
+// unavailable, with a clear error, rather than the whole server failing to boot.
+let DatabaseSync = null;
+let sqliteLoadError = null;
+try {
+    ({ DatabaseSync } = require('node:sqlite'));
+} catch (err) {
+    sqliteLoadError = err;
+}
+
+function requireSqlite() {
+    if (!DatabaseSync) {
+        throw new Error('Offline maps require a newer Node/Electron runtime with built-in SQLite support');
+    }
+}
 
 // Content type per MBTiles `format` metadata value (raster formats only)
 const RASTER_CONTENT_TYPES = {
@@ -57,6 +74,7 @@ function openMbtiles(mapPath) {
     if (!fs.existsSync(mapPath)) {
         throw new Error('Map package not found at that path');
     }
+    requireSqlite();
 
     let db;
     try {
