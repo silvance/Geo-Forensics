@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const { startServer } = require('./src/server.js');
@@ -23,6 +23,40 @@ const { exiftool } = require('exiftool-vendored');
 
 // Prevent automatic downloads
 autoUpdater.autoDownload = false
+
+// --- Air-Gapped Mode network policy ---
+// The application is built for offline / air-gapped forensic workstations, so
+// it starts locked down: no outbound network is permitted until the renderer
+// (which owns the persisted setting) explicitly turns Air-Gapped Mode off.
+// This is a hard guarantee enforced at the Electron session layer, on top of
+// the renderer simply not adding online map layers or requesting updates.
+let airGapped = true;
+
+// Requests to the app's own loopback server and to local resources must always
+// be allowed — the UI is served from http://localhost:<port> and the bundled
+// Leaflet/tiles come through it. Everything else is blocked while air-gapped.
+function isLocalRequest(url) {
+    if (/^(devtools|file|blob|data|chrome-extension):/i.test(url)) return true;
+    try {
+        const host = new URL(url).hostname;
+        return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+    } catch (err) {
+        // A URL we can't parse is not a recognizable local request; block it
+        return false;
+    }
+}
+
+function installNetworkGuard() {
+    // Blocks any non-local http(s)/ws request whenever Air-Gapped Mode is on.
+    // Prevents accidental outbound traffic rather than letting it fail later.
+    session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+        if (airGapped && !isLocalRequest(details.url)) {
+            console.warn(`[air-gap] blocked outbound request: ${details.url}`);
+            return callback({ cancel: true });
+        }
+        callback({ cancel: false });
+    });
+}
 
 let mainWindow;
 let splashWindow;
@@ -95,12 +129,27 @@ function createWindow() {
     });
 }
 
+// The renderer owns the persisted Air-Gapped Mode setting and pushes it here.
+// Until it does, the guard stays on (fail-closed).
+ipcMain.on('set-network-policy', (event, isAirGapped) => {
+    airGapped = (isAirGapped !== false);
+    console.log(`[air-gap] network guard ${airGapped ? 'ARMED (offline)' : 'disarmed (online allowed)'}`);
+});
+
 // Listen for the frontend telling us to check for updates
 ipcMain.on('check-updates', (event, autoUpdateEnabled) => {
     // Abort the update process if running as a Microsoft Store AppX
     if (process.windowsStore) {
         console.log("Running as a Microsoft Store app. Auto-updates disabled.");
-        return; 
+        return;
+    }
+
+    // Air-Gapped Mode suppresses update checks entirely, regardless of the
+    // separate auto-update setting. The app must never contact GitHub while
+    // air-gapped, and must not surface a "couldn't reach GitHub" error for it.
+    if (airGapped) {
+        console.log("Air-Gapped Mode is on; update checks are suppressed.");
+        return;
     }
 
     if (autoUpdateEnabled === 'true') {
@@ -128,6 +177,18 @@ ipcMain.handle('dialog:openDirectory', async () => {
     }
 });
 
+// Native OS file picker for an offline map package (.mbtiles)
+ipcMain.handle('dialog:openMbtiles', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        title: 'Import Offline Map Package',
+        properties: ['openFile'],
+        filters: [{ name: 'Offline Map (MBTiles)', extensions: ['mbtiles'] }]
+    });
+
+    if (canceled || filePaths.length === 0) return null;
+    return filePaths[0];
+});
+
 /*
 // Tells if GitHub was checked but no update was found
 autoUpdater.on('update-not-available', (info) => {
@@ -139,8 +200,11 @@ autoUpdater.on('update-not-available', (info) => {
 });
 */
 
-// Tells if there is a hash mismatch or network failure
+// Tells if there is a hash mismatch or network failure. Never shown while
+// air-gapped: an offline machine cannot reach GitHub by design, and that is
+// not an error the examiner should see.
 autoUpdater.on('error', (err) => {
+    if (airGapped) return;
     dialog.showErrorBox("Updater Error", "An error occurred:\n" + err.toString());
 });
 
@@ -177,7 +241,8 @@ autoUpdater.on('update-downloaded', async () => {
 });
 app.whenReady().then(async () => {
     try {
-        activePort = await startServer(3000); 
+        installNetworkGuard(); // Arm the air-gap guard before any window can load
+        activePort = await startServer(3000);
         createWindow();
     } catch (error) {
         console.error("Failed to start GeoForensics server:", error);
