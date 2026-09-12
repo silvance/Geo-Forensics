@@ -1,6 +1,6 @@
 {
   "name": "geoforensics",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "GeoForensics: free batch image & video geolocation and EXIF forensics tool. Extracts metadata, maps GPS coordinates, and reconstructs event timelines - fully local.",
   "main": "main.js",
   "scripts": {
@@ -30,7 +30,7 @@
   "build": {
     "appId": "com.silvance.geoforensics",
     "productName": "GeoForensics",
-    "copyright": "Copyright \u00a9 2026 GeoForensics contributors. Based on Refloow Geo Forensics \u00a9 Veljko Vuckovic",
+    "copyright": "Copyright © 2026 GeoForensics contributors. Based on Refloow Geo Forensics © Veljko Vuckovic",
     "asar": true,
     "asarUnpack": [
       "node_modules/exiftool-vendored/**",
