@@ -30,7 +30,7 @@ It is built for **offline / air-gapped forensic workstations**: with Air-Gapped 
 
 ## 🔒 Privacy & offline guarantee
 
-All processing happens locally. The embedded web server binds to `127.0.0.1` only and serves only files discovered by the current scan (and imported offline-map tiles). With Air-Gapped Mode on, the Electron process cancels any non-loopback request before it leaves the machine. See [PRIVACY.md](.github/PRIVACY.md).
+All processing happens locally. The embedded web server binds to `127.0.0.1` only, requires a per-launch token that only the app's own window holds, and serves only files discovered by the current scan (and imported offline-map tiles). With Air-Gapped Mode on, the Electron process cancels any non-loopback request before it leaves the machine. See [PRIVACY.md](.github/PRIVACY.md) and [SECURITY.md](SECURITY.md) for the threat model.
 
 ## 🧭 Working with forensic exports (Magnet AXIOM & others)
 
@@ -84,7 +84,7 @@ Windows builds bundle everything — Electron, the local server, ExifTool, and L
 
 ## 🤝 Contributing
 
-Bug reports, feature requests, and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the [issue tracker](https://github.com/silvance/Geo-Forensics/issues).
+Bug reports, feature requests, and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the [issue tracker](https://github.com/silvance/Geo-Forensics/issues). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## 📜 License
 
