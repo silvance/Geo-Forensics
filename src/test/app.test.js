@@ -28,7 +28,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { scanDirectory, countFiles, isServableFile, compareWithGpsUtc, coordinateFlags, markDuplicates, exiftool } = require('../src/utils/scanner');
 const mbtiles = require('../src/utils/mbtiles');
-const { app } = require('../src/server');
+const { app, setApiToken, CONTENT_SECURITY_POLICY } = require('../src/server');
 
 // A 1x1 red PNG used to fill test map tiles
 const RED_PNG = Buffer.from(
@@ -572,6 +572,69 @@ test('markDuplicates spans located and unlocated files and skips unhashed ones',
     assert.equal(entries[4].duplicateOf, '/a');
     assert.equal(entries[1].duplicateOf, undefined);
     assert.equal(entries[3].duplicateOf, undefined);
+});
+
+// --- Local API token and security headers ---
+
+test('every response carries the CSP and hardening headers', async () => {
+    const page = await fetch(`${baseUrl}/`);
+    assert.equal(page.headers.get('content-security-policy'), CONTENT_SECURITY_POLICY);
+    assert.match(CONTENT_SECURITY_POLICY, /default-src 'self'/);
+    assert.match(CONTENT_SECURITY_POLICY, /connect-src 'self'/);
+    assert.match(CONTENT_SECURITY_POLICY, /object-src 'none'/);
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    const api = await fetch(`${baseUrl}/api/versions`);
+    assert.equal(api.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('with a token configured, /api requires it as a bearer header or ?token=', async () => {
+    setApiToken('test-secret-token');
+    try {
+        // No credential -> 401, and no data
+        const denied = await fetch(`${baseUrl}/api/versions`);
+        assert.equal(denied.status, 401);
+        assert.equal((await denied.json()).success, false);
+
+        // Wrong credential -> 401
+        const wrong = await fetch(`${baseUrl}/api/versions`, { headers: { Authorization: 'Bearer nope' } });
+        assert.equal(wrong.status, 401);
+        const wrongQuery = await fetch(`${baseUrl}/api/versions?token=nope`);
+        assert.equal(wrongQuery.status, 401);
+
+        // Bearer header -> 200
+        const ok = await fetch(`${baseUrl}/api/versions`, { headers: { Authorization: 'Bearer test-secret-token' } });
+        assert.equal(ok.status, 200);
+
+        // Query form (what <img>, EventSource and tile layers use) -> 200
+        const okQuery = await fetch(`${baseUrl}/api/versions?token=test-secret-token`);
+        assert.equal(okQuery.status, 200);
+
+        // Evidence endpoints are covered too, including the estimate route
+        const scan = await fetch(`${baseUrl}/api/scan`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: tmpDir })
+        });
+        assert.equal(scan.status, 401);
+        const image = await fetch(`${baseUrl}/api/image?path=${encodeURIComponent(gpsFile)}`);
+        assert.equal(image.status, 401);
+        const estimate = await fetch(`${baseUrl}/api/estimate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: tmpDir })
+        });
+        assert.equal(estimate.status, 401);
+        const stream = await fetch(`${baseUrl}/api/scan-stream?path=${encodeURIComponent(tmpDir)}&id=tok`);
+        assert.equal(stream.status, 401);
+
+        // The UI itself (static files) needs no token
+        const index = await fetch(`${baseUrl}/`);
+        assert.equal(index.status, 200);
+    } finally {
+        setApiToken(null);
+    }
+    // Back to the development default: open on loopback
+    const open = await fetch(`${baseUrl}/api/versions`);
+    assert.equal(open.status, 200);
 });
 
 // --- Air-gap network safety (server layer) ---
