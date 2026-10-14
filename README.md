@@ -17,12 +17,14 @@ It is built for **offline / air-gapped forensic workstations**: with Air-Gapped 
 * **Batch EXIF extraction** — processes entire directory trees concurrently using [ExifTool](https://exiftool.org/), supporting virtually every image and video format (JPG, HEIC, CR3, MP4, MOV, …).
 * **Air-Gapped Mode (default ON)** — a hard block on all outbound network requests, enforced in the Electron process: no update checks, no online map tiles, nothing leaves the workstation. A header badge always shows the current state.
 * **Offline basemaps** — import a local **MBTiles** raster map package (Settings → Offline Maps) to plot evidence on a real basemap with no connection. Evidence outside the map's coverage is flagged.
-* **SHA-256 hashing** — every located file is hashed (original bytes, read-only) for a reproducible identifier, included in every export.
+* **SHA-256 hashing** — every file in the evidence folder is hashed (original bytes, read-only), located or not, so the Forensic Manifest is a complete inventory; byte-identical **duplicates** are detected and flagged.
+* **GPS time as a timezone anchor** — when a file records GPS receiver time (UTC by definition) but its timestamp has no embedded offset, the implied offset is reported as *derived*, clearly separated from embedded offsets; where an offset is embedded, the camera-clock drift against GPS time is reported.
+* **Coordinate sanity flags** — exactly 0,0 ("null island") and out-of-range positions stay plotted but are flagged in the UI and every export.
 * **Forensic timestamps** — all raw EXIF timestamps and their offset tags are preserved; the timeline field used is recorded, and timezone-less timestamps are clearly marked *unknown* (never silently assumed UTC or local).
 * **Interactive mapping** — evidence plotted with clustered pins, chronological numbering, a movement path, and camera-direction cones. Six online basemaps are available when Air-Gapped Mode is off.
 * **Live progress & cancel** — scans stream real progress and can be cancelled mid-flight; partial results are clearly flagged.
 * **Filtering** — narrow results by device or date range without rescanning; evidence numbering stays stable.
-* **Evidence export** — **CSV**, **GeoJSON**, **KML**, a self-contained **HTML case report** (with full scan provenance and an optional embedded thumbnail per image), and a **Forensic Manifest (JSON, `manifestVersion: 1`)** — all including SHA-256, coordinates, altitude, raw timestamps, timezone status, device/lens/software, heading and speed.
+* **Evidence export** — **CSV**, **GeoJSON**, **KML**, a self-contained **HTML case report** (with full scan provenance and an optional embedded thumbnail per image), and a **Forensic Manifest (JSON, `manifestVersion: 1`)** — all including SHA-256, coordinates, altitude, raw timestamps, timezone status, GPS UTC time, derived offset, flags, duplicates, device/lens/software, heading and speed. The HTML report contains no online links.
 * **Scan completeness reporting** — discovered / examined / located / unreadable / hash-failure counts, surfaced in the UI and baked into reports.
 * **Dark & light mode**, media previews, precision zoom, and cross-platform support (Windows, Linux, macOS).
 

@@ -1099,3 +1099,21 @@ body.light-theme #estimateTimer {
 body.light-theme #estimateFileCount {
     color: #555555;
 }
+
+/* Per-file forensic flags (0,0, out of range, duplicate) */
+.evidence-flag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #e0a030;
+  border: 1px solid rgba(224, 160, 48, 0.5);
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 4px;
+  cursor: help;
+}
+body.light-theme .evidence-flag {
+  color: #b45309;
+  border-color: rgba(180, 83, 9, 0.5);
+}

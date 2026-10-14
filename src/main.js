@@ -19,7 +19,8 @@ const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const { startServer } = require('./src/server.js');
-const { exiftool } = require('exiftool-vendored');
+// The scanner owns the ExifTool process pool; shut down the same instance on quit
+const { exiftool } = require('./src/utils/scanner');
 
 // Prevent automatic downloads
 autoUpdater.autoDownload = false

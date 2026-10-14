@@ -431,6 +431,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       let lastScanData = []; // Currently displayed (possibly filtered) results, used by the export feature
       let fullScanData = []; // All chronologically sorted results of the last scan
       let fullScanStats = null;
+      let fullScanOther = []; // Files hashed but not plotted (no GPS / unreadable), for the manifest
       // Provenance captured per scan, for the case report and forensic manifest
       let scanStartedAt = null;
       let scanFinishedAt = null;
@@ -537,6 +538,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           const payload = JSON.parse(e.data);
           finishScanUI();
           try {
+            fullScanOther = payload.otherFiles || [];
             renderScanResults(payload.data, payload.stats);
           } catch (err) {
             console.error(err);
@@ -550,6 +552,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           finishScanUI();
           statusMsg.innerText = "Scan failed.";
           lastScanData = [];
+          fullScanOther = [];
           document.getElementById("exportBtn").disabled = true;
           showCustomAlert(payload.error, "Scan Error");
         });
@@ -619,9 +622,29 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
       // Short human label for a timestamp's timezone status
       function tzLabel(item) {
         if (!item.time || item.time === "Unknown Time") return "";
-        return item.timezoneKnown
-          ? ` (UTC${escapeHTML(item.timezoneOffset || "")})`
-          : ` <span title="This EXIF timestamp has no timezone. It is a local wall-clock time of unknown zone; it is NOT assumed to be UTC or your system time.">(timezone unknown)</span>`;
+        if (item.timezoneKnown) return ` (UTC${escapeHTML(item.timezoneOffset || "")})`;
+        if (item.derivedOffset) {
+          return ` <span title="This EXIF timestamp has no embedded timezone. Comparing it with the GPS receiver's UTC time implies UTC${escapeHTML(item.derivedOffset)}; this is DERIVED, not recorded in the file.">(timezone unknown; GPS implies UTC${escapeHTML(item.derivedOffset)})</span>`;
+        }
+        return ` <span title="This EXIF timestamp has no timezone. It is a local wall-clock time of unknown zone; it is NOT assumed to be UTC or your system time.">(timezone unknown)</span>`;
+      }
+
+      // Human labels for the scanner's per-file flags
+      const FLAG_LABELS = {
+        "null-island": "Coordinates are exactly 0,0 (null island): usually a receiver default, not a real fix",
+        "out-of-range": "Coordinates are outside the valid latitude/longitude range",
+        "duplicate": "Byte-identical to another file in this scan (same SHA-256)",
+      };
+      const FLAG_SHORT = { "null-island": "0,0", "out-of-range": "out of range", "duplicate": "duplicate" };
+
+      function flagsHtml(item) {
+        if (!item.flags || item.flags.length === 0) return "";
+        return item.flags.map((f) => `<span class="evidence-flag" title="${escapeHTML(FLAG_LABELS[f] || f)}">&#9888; ${escapeHTML(FLAG_SHORT[f] || f)}</span>`).join(" ");
+      }
+
+      // Short file name of the original a duplicate points at
+      function baseName(p) {
+        return String(p || "").split(/[\\/]/).pop();
       }
 
       // Shared metadata block for map popups; optional fields only appear
@@ -634,6 +657,12 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         if (item.speedKmh != null) html += `<br><b>Speed:</b> ${item.speedKmh.toFixed(1)} km/h`;
         if (item.lens) html += `<br><b>Lens:</b> ${escapeHTML(item.lens)}`;
         if (item.software) html += `<br><b>Software:</b> ${escapeHTML(item.software)}`;
+        if (item.gpsUtcTime) {
+          html += `<br><b>GPS time (UTC):</b> ${escapeHTML(item.gpsUtcTime)}`;
+          if (item.clockDriftSeconds != null && item.clockDriftSeconds !== 0) html += ` <span style="color:#888;" title="Camera clock minus GPS time, after applying the ${item.timezoneKnown ? "embedded" : "derived"} offset">(camera clock ${item.clockDriftSeconds > 0 ? "+" : ""}${item.clockDriftSeconds} s)</span>`;
+        }
+        if (item.flags && item.flags.length) html += `<br><b>Flags:</b> ${flagsHtml(item)}`;
+        if (item.duplicateOf) html += `<br><b>Duplicate of:</b> <span title="${escapeHTML(item.duplicateOf)}">${escapeHTML(baseName(item.duplicateOf))}</span>`;
         if (item.sha256) html += `<br><b>SHA-256:</b> <span style="font-family:monospace; font-size:11px; word-break:break-all;">${escapeHTML(item.sha256)}</span>`;
         else if (item.hashError) html += `<br><b>SHA-256:</b> <span style="color:#e94560;">failed (${escapeHTML(item.hashError)})</span>`;
         return html;
@@ -752,6 +781,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           if (stats) {
             statusText += ` Scanned ${stats.totalFiles} files`;
             if (stats.unreadable > 0) statusText += `, ${stats.unreadable} unreadable`;
+            if (stats.duplicates > 0) statusText += `, ${stats.duplicates} duplicate${stats.duplicates === 1 ? "" : "s"}`;
+            if (stats.flaggedCoordinates > 0) statusText += `, ${stats.flaggedCoordinates} flagged`;
             statusText += ".";
           }
           statusMsg.innerText = statusText;
@@ -899,6 +930,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                     <span class="evidence-name">${item.originalIndex + 1}. ${escapeHTML(item.name)}</span>
                     <div class="evidence-meta">📅 ${escapeHTML(item.time)}${item.time && item.time !== "Unknown Time" && !item.timezoneKnown ? " <span title='EXIF timestamp has no timezone; local wall-clock of unknown zone.' style='color:#e0a030;'>&#9888;</span>" : ""}</div>
                     <div class="evidence-meta">📱 ${escapeHTML(item.camera)}</div>
+                    ${item.flags && item.flags.length ? `<div class="evidence-meta">${flagsHtml(item)}</div>` : ""}
                 </div>
                 ${getPreviewHtml(item, false)}
             `;
@@ -994,9 +1026,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         if (format === "csv") {
           // Quote every text field so paths and device names with commas survive
           const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-          const rows = ["#,File,Full Path,SHA-256,Latitude,Longitude,Altitude (m),Timestamp,Timeline Field,Timezone,Make,Model,Device,Heading (deg),Speed (km/h),Lens,Software"];
+          const rows = ["#,File,Full Path,SHA-256,Latitude,Longitude,Altitude (m),Timestamp,Timeline Field,Timezone,GPS Time (UTC),Derived Offset (from GPS),Clock Drift (s),Flags,Duplicate Of,Make,Model,Device,Heading (deg),Speed (km/h),Lens,Software"];
           data.forEach((item, i) => {
-            rows.push([i + 1, esc(item.name), esc(item.fullPath), esc(item.sha256 || (item.hashError ? "HASH FAILED: " + item.hashError : "")), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.timelineField), esc(tzStr(item)), esc(item.make), esc(item.model), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
+            rows.push([i + 1, esc(item.name), esc(item.fullPath), esc(item.sha256 || (item.hashError ? "HASH FAILED: " + item.hashError : "")), item.lat, item.lon, item.alt != null ? item.alt : "", esc(item.time), esc(item.timelineField), esc(tzStr(item)), esc(item.gpsUtcTime), esc(item.derivedOffset ? "UTC" + item.derivedOffset : ""), item.clockDriftSeconds != null ? item.clockDriftSeconds : "", esc((item.flags || []).join(" ")), esc(item.duplicateOf), esc(item.make), esc(item.model), esc(item.camera), item.heading != null ? item.heading : "", item.speedKmh != null ? item.speedKmh.toFixed(1) : "", esc(item.lens), esc(item.software)].join(","));
           });
           triggerDownload(exportFilename("csv"), "text/csv", rows.join("\r\n"));
         } else if (format === "geojson") {
@@ -1015,6 +1047,9 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
                 time: item.time, timelineField: item.timelineField,
                 timezoneKnown: item.timezoneKnown, timezoneOffset: item.timezoneOffset,
                 timestamps: item.timestamps || null,
+                gpsUtcTime: item.gpsUtcTime || null, derivedOffset: item.derivedOffset || null,
+                clockDriftSeconds: item.clockDriftSeconds ?? null,
+                flags: item.flags || [], duplicateOf: item.duplicateOf || null,
                 make: item.make, model: item.model, device: item.camera,
                 heading: item.heading, speedKmh: item.speedKmh, lens: item.lens, software: item.software,
               },
@@ -1033,6 +1068,10 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             if (item.speedKmh != null) desc += `\nSpeed: ${item.speedKmh.toFixed(1)} km/h`;
             if (item.lens) desc += `\nLens: ${escXml(item.lens)}`;
             if (item.software) desc += `\nSoftware: ${escXml(item.software)}`;
+            if (item.gpsUtcTime) desc += `\nGPS time (UTC): ${escXml(item.gpsUtcTime)}`;
+            if (item.derivedOffset) desc += `\nDerived offset (from GPS, not embedded): UTC${escXml(item.derivedOffset)}`;
+            if (item.flags && item.flags.length) desc += `\nFlags: ${escXml(item.flags.join(", "))}`;
+            if (item.duplicateOf) desc += `\nDuplicate of: ${escXml(item.duplicateOf)}`;
             kml += `<Placemark>\n<name>${i + 1}. ${escXml(item.name)}</name>\n<description>${desc}</description>\n<Point><coordinates>${item.lon},${item.lat}${item.alt != null ? "," + item.alt : ""}</coordinates></Point>\n</Placemark>\n`;
           });
           kml += `</Document>\n</kml>\n`;
@@ -1056,7 +1095,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
       // --- Scan provenance (shared by the case report and forensic manifest) ---
 
-      const TZ_CAVEAT = "EXIF timestamps without an offset are local wall-clock times of unknown timezone. GeoForensics does not assume UTC or system-local time; timeline ordering is by wall-clock value only. Timestamps marked timezone-known carry an explicit EXIF offset.";
+      const TZ_CAVEAT = "EXIF timestamps without an offset are local wall-clock times of unknown timezone. GeoForensics does not assume UTC or system-local time; timeline ordering is by wall-clock value only. Timestamps marked timezone-known carry an explicit EXIF offset. Where a file also records GPS receiver time (UTC by definition), the offset implied by comparing the two is reported as DERIVED; it is an inference, never presented as an embedded value.";
 
       function activeFilters() {
         const device = document.getElementById("filterDevice").value;
@@ -1086,6 +1125,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             withoutLocation: stats.noLocation ?? null,
             unreadable: stats.unreadable ?? null,
             hashFailures: stats.hashFailures ?? null,
+            duplicates: stats.duplicates ?? null,
+            flaggedCoordinates: stats.flaggedCoordinates ?? null,
           },
           scanCancelledPartial: !!stats.aborted,
           filtersActive: filters.length > 0,
@@ -1119,10 +1160,26 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
             timezoneKnown: item.timezoneKnown,
             timezoneOffset: item.timezoneOffset,
             timestamps: item.timestamps || null,
+            gpsUtcTime: item.gpsUtcTime || null,
+            derivedOffset: item.derivedOffset || null,
+            clockDriftSeconds: item.clockDriftSeconds ?? null,
+            flags: item.flags || [],
+            duplicateOf: item.duplicateOf || null,
             device: {make: item.make, model: item.model, lens: item.lens},
             software: item.software,
             heading: item.heading,
             speedKmh: item.speedKmh,
+          })),
+          // Every other file in the evidence folder, hashed, so the manifest
+          // attests to the complete set and not only the plotted subset.
+          // Unaffected by filters: filters narrow the evidence list only.
+          otherFiles: fullScanOther.map((o) => ({
+            name: o.name,
+            path: o.fullPath,
+            sha256: o.sha256 || null,
+            hashError: o.hashError || null,
+            status: o.status,
+            duplicateOf: o.duplicateOf || null,
           })),
         }, null, 2);
       }
@@ -1225,23 +1282,28 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
         const tzCell = (item) => {
           if (!item.time || item.time === "Unknown Time") return "—";
-          return item.timezoneKnown
-            ? `UTC${esc(item.timezoneOffset || "")}`
-            : `<span style="color:#b45309;">unknown &#9888;</span>`;
+          if (item.timezoneKnown) return `UTC${esc(item.timezoneOffset || "")}`;
+          return `<span style="color:#b45309;">unknown &#9888;</span>` + (item.derivedOffset ? `<div class="path">GPS implies UTC${esc(item.derivedOffset)} (derived)</div>` : "");
+        };
+
+        const flagsCell = (item) => {
+          const parts = (item.flags || []).map((f) => `<span style="color:#b45309;" title="${esc(FLAG_LABELS[f] || f)}">&#9888; ${esc(FLAG_SHORT[f] || f)}</span>`);
+          if (item.duplicateOf) parts.push(`<div class="path">of ${esc(baseName(item.duplicateOf))}</div>`);
+          return parts.length ? parts.join("<br>") : "—";
         };
 
         const rows = data.map((item) => `
       <tr>
         <td>${item.originalIndex + 1}</td>
         <td>${esc(item.name)}<div class="path">${esc(item.fullPath)}</div><div class="hash">SHA-256: ${item.sha256 ? esc(item.sha256) : `<span style="color:#b91c1c;">FAILED${item.hashError ? " (" + esc(item.hashError) + ")" : ""}</span>`}</div>${thumbnails && thumbnails.get(item.fullPath) ? `<img class="thumb" src="${thumbnails.get(item.fullPath)}" alt="">` : ""}</td>
-        <td>${esc(item.time)}${item.timelineField ? `<div class="path">${esc(item.timelineField)}</div>` : ""}</td>
+        <td>${esc(item.time)}${item.timelineField ? `<div class="path">${esc(item.timelineField)}</div>` : ""}${item.gpsUtcTime ? `<div class="path">GPS UTC: ${esc(item.gpsUtcTime)}${item.clockDriftSeconds ? ` (clock ${item.clockDriftSeconds > 0 ? "+" : ""}${item.clockDriftSeconds} s)` : ""}</div>` : ""}</td>
         <td>${tzCell(item)}</td>
         <td>${esc(item.camera)}${item.software ? `<div class="path">Software: ${esc(item.software)}</div>` : ""}</td>
         <td class="num">${item.lat}</td>
         <td class="num">${item.lon}</td>
         <td class="num">${item.alt != null ? item.alt.toFixed(1) + " m" : "—"}</td>
         <td class="num">${item.heading != null ? item.heading.toFixed(0) + "° " + degToCompass(item.heading) : "—"}</td>
-        <td><a href="https://www.openstreetmap.org/?mlat=${encodeURIComponent(item.lat)}&amp;mlon=${encodeURIComponent(item.lon)}#map=16/${encodeURIComponent(item.lat)}/${encodeURIComponent(item.lon)}">map</a></td>
+        <td>${flagsCell(item)}</td>
       </tr>`).join("");
 
         const metaRow = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
@@ -1261,6 +1323,8 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
           metaRows += metaRow("Without location data", String(stats.noLocation));
           metaRows += metaRow("Unreadable", String(stats.unreadable));
           metaRows += metaRow("Hash failures", String(stats.hashFailures ?? 0));
+          metaRows += metaRow("Duplicate files", String(stats.duplicates ?? 0));
+          metaRows += metaRow("Flagged coordinates", String(stats.flaggedCoordinates ?? 0));
         }
         metaRows += metaRow("Air-Gapped Mode", p.airGappedMode ? "ON (no outbound network)" : "off");
         metaRows += metaRow("Offline basemap", p.offlineMap ? esc(p.offlineMap.name || "imported MBTiles") + ` <span class="path">(zoom ${p.offlineMap.minzoom}–${p.offlineMap.maxzoom})</span>` : "none");
@@ -1301,6 +1365,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   </table>
 
   <div class="caveat"><b>Timestamp / timezone note:</b> ${esc(p.timestampCaveat)} Timestamps shown as "unknown" have no embedded EXIF offset and must not be treated as UTC or local system time.</div>
+  <div class="caveat"><b>Flags:</b> "0,0" marks coordinates of exactly 0,0 (null island), kept on the map but usually a receiver default rather than a real fix; "out of range" marks values outside valid latitude/longitude; "duplicate" marks a file byte-identical (same SHA-256) to an earlier file in the scan.</div>
 
   <h2>Coordinate Plot</h2>
   ${buildReportMapSvg(data)}
@@ -1309,7 +1374,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
   <h2>Evidence (chronological)</h2>
   <table>
     <thead>
-      <tr><th>#</th><th>File / SHA-256</th><th>Timestamp</th><th>Timezone</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Link</th></tr>
+      <tr><th>#</th><th>File / SHA-256</th><th>Timestamp</th><th>Timezone</th><th>Device</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Heading</th><th>Flags</th></tr>
     </thead>
     <tbody>${rows}
     </tbody>
@@ -1317,7 +1382,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
 
   <div class="caption"><b>Source files:</b> GeoForensics analyzes metadata embedded in the files supplied to it. When exporting evidence from forensic suites such as Magnet AXIOM, export the original/native file whenever possible &mdash; location information stored only in a separate case artifact or database cannot be recovered from an exported image that does not itself contain that metadata.</div>
 
-  <footer>Generated by <a href="https://github.com/silvance/Geo-Forensics">GeoForensics</a> (AGPL-3.0). This report is self-contained; only the per-row map links require internet access.</footer>
+  <footer>Generated by GeoForensics (AGPL-3.0, github.com/silvance/Geo-Forensics). This report is self-contained and contains no online links; every SHA-256 above, plus those of all unlocated files, is in the Forensic Manifest export.</footer>
 </body>
 </html>`;
       }
@@ -1359,7 +1424,7 @@ document.getElementById('folderPath').addEventListener('input', (e) => {
         <div class="modal-section">
           <h3>Offline / air-gapped use</h3>
           <p style="font-size: 0.92em; color: #b8b8b8; line-height: 1.5;">
-            With <b>Air-Gapped Mode</b> on (the default), no data leaves the workstation: no update checks, no online map tiles, no outbound requests of any kind. Import a local <b>MBTiles</b> map package in Settings to show evidence on a basemap without a connection. Every file gets a <b>SHA-256</b>, and the Case Report / Forensic Manifest record full scan provenance.
+            With <b>Air-Gapped Mode</b> on (the default), no data leaves the workstation: no update checks, no online map tiles, no outbound requests of any kind. Import a local <b>MBTiles</b> map package in Settings to show evidence on a basemap without a connection. Every file in the folder gets a <b>SHA-256</b> (located or not), byte-identical duplicates are flagged, and the Case Report / Forensic Manifest record full scan provenance.
           </p>
         </div>
 

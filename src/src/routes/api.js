@@ -33,8 +33,8 @@ router.post('/scan', async (req, res) => {
     console.log(`[ANALYZE] Request for folder: ${folderPath}`);
 
     try {
-        const { results, stats } = await scanDirectory(folderPath);
-        res.json({ success: true, data: results, stats: stats });
+        const { results, otherFiles, stats } = await scanDirectory(folderPath);
+        res.json({ success: true, data: results, otherFiles: otherFiles, stats: stats });
     } catch (error) {
         console.error("Error:", error.message);
         res.status(400).json({ success: false, error: error.message });
@@ -77,7 +77,7 @@ router.get('/scan-stream', async (req, res) => {
     try {
         // Progress events are throttled so huge folders don't flood the stream
         let lastSent = 0;
-        const { results, stats } = await scanDirectory(folderPath, {
+        const { results, otherFiles, stats } = await scanDirectory(folderPath, {
             signal: controller.signal,
             onProgress: (processed, total) => {
                 const now = Date.now();
@@ -87,7 +87,7 @@ router.get('/scan-stream', async (req, res) => {
                 }
             }
         });
-        send('done', { data: results, stats: stats });
+        send('done', { data: results, otherFiles: otherFiles, stats: stats });
     } catch (error) {
         console.error("Error:", error.message);
         send('scan-error', { error: error.message });
