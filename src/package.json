@@ -1,6 +1,6 @@
 {
   "name": "geoforensics",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "GeoForensics: free batch image & video geolocation and EXIF forensics tool. Extracts metadata, maps GPS coordinates, and reconstructs event timelines - fully local.",
   "main": "main.js",
   "scripts": {

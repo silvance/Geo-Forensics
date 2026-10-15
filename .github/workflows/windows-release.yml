@@ -49,6 +49,23 @@ jobs:
             src/release/latest.yml
           if-no-files-found: error
 
+      # Release notes come from the matching "## X.Y.Z" section of CHANGELOG.md
+      - name: Extract release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        working-directory: .
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section for $version; using a placeholder" >&2
+            echo "See CHANGELOG.md for the changes in $version." > release-notes.md
+          fi
+          cat release-notes.md
+
       # On a version tag, attach the binaries to a draft GitHub release.
       # latest.yml + blockmap are what electron-updater reads, so publishing
       # them enables auto-updates for installed copies.
@@ -57,6 +74,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body_path: release-notes.md
           files: |
             src/release/*.exe
             src/release/*.blockmap

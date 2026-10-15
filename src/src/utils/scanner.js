@@ -19,7 +19,15 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { exiftool } = require('exiftool-vendored');
+const { ExifTool } = require('exiftool-vendored');
+
+// Our own ExifTool instance rather than the library's default singleton: the
+// default READ options silently discard a GPS position of exactly 0,0
+// (ignoreZeroZeroLatLon) and infer timezones from coordinates. A forensic
+// tool must report what the file says and let the examiner judge it, so 0,0
+// is read (and flagged as null-island downstream) instead of vanishing into
+// the "no location" count.
+const exiftool = new ExifTool({ ignoreZeroZeroLatLon: false });
 
 // Streams a file through SHA-256, returning { sha256, error }. The file is read
 // read-only and never modified. Streaming keeps memory flat regardless of file
@@ -81,6 +89,11 @@ async function collectFiles(rootPath) {
         } catch (err) {
             return; // Restricted access folder
         }
+
+        // Directory order from the OS is arbitrary (and differs between
+        // filesystems). Sorting by name makes discovery order, and therefore
+        // which copy of a duplicate counts as the original, reproducible.
+        entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
         for (const entry of entries) {
             const fullPath = path.join(dir, entry.name);
@@ -199,6 +212,123 @@ function extractTimestamps(tags) {
     };
 }
 
+// Raw string form of an ExifDate / ExifTime / ExifDateTime value, as stored.
+function rawTagString(v) {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    return v.rawValue || v.toString();
+}
+
+// GPS time is written by the receiver in UTC (EXIF GPSDateStamp + GPSTimeStamp),
+// independently of the camera clock. It is the one timestamp in a file whose
+// zone is defined by the standard, so it can anchor an otherwise zone-less
+// DateTimeOriginal. Returns the raw "YYYY:MM:DD HH:MM:SS" UTC string, or null.
+function extractGpsUtc(tags) {
+    const date = rawTagString(tags.GPSDateStamp);
+    const time = rawTagString(tags.GPSTimeStamp);
+    if (date && time) return `${date} ${time}`;
+    // Some containers (XMP, QuickTime) only expose the combined composite
+    const combined = rawTagString(tags.GPSDateTime);
+    return combined ? combined.replace(/Z$/, '') : null;
+}
+
+// Parses "YYYY:MM:DD HH:MM:SS[.fff]" (ignoring any trailing offset) as if it
+// were UTC, returning epoch milliseconds or null. Used only for arithmetic
+// between two timestamps; never to present a converted time.
+function parseNaiveAsUtc(raw) {
+    if (!raw) return null;
+    const m = String(raw).match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/);
+    if (!m) return null;
+    const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    return Number.isNaN(ms) ? null : ms;
+}
+
+function offsetToMinutes(offset) {
+    const m = String(offset || '').match(/^([+-])(\d{2}):?(\d{2})$/);
+    if (!m) return null;
+    const sign = m[1] === '-' ? -1 : 1;
+    return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+}
+
+function minutesToOffset(minutes) {
+    const sign = minutes < 0 ? '-' : '+';
+    const abs = Math.abs(minutes);
+    const h = String(Math.floor(abs / 60)).padStart(2, '0');
+    const mm = String(abs % 60).padStart(2, '0');
+    return `${sign}${h}:${mm}`;
+}
+
+// Compares the timeline timestamp with the GPS UTC time.
+//
+// When the file carries NO embedded offset, the difference between the local
+// wall-clock value and GPS UTC, rounded to the nearest 15 minutes, is the
+// offset the camera clock was most likely set to. It is reported as a
+// DERIVED value, clearly separated from timezoneKnown (which stays false):
+// the examiner sees "derived from GPS time", never a silently assumed zone.
+//
+// When the file DOES carry an offset, the same comparison yields the drift
+// between the camera clock and GPS time, a useful consistency check.
+//
+// Returns { derivedOffset, clockDriftSeconds } (both null when not computable).
+function compareWithGpsUtc(ts, gpsUtc) {
+    const empty = { derivedOffset: null, clockDriftSeconds: null };
+    if (!gpsUtc || !ts.time || ts.time === 'Unknown Time') return empty;
+    const local = parseNaiveAsUtc(ts.time);
+    const gps = parseNaiveAsUtc(gpsUtc);
+    if (local == null || gps == null) return empty;
+
+    const deltaMinutes = (local - gps) / 60000;
+
+    if (ts.timezoneKnown) {
+        const known = offsetToMinutes(ts.timezoneOffset);
+        if (known == null) return empty;
+        return { derivedOffset: null, clockDriftSeconds: Math.round((deltaMinutes - known) * 60) };
+    }
+
+    // Real-world offsets are whole quarter-hours within [-12:00, +14:00];
+    // anything else means the two clocks disagree too much to derive a zone.
+    const rounded = Math.round(deltaMinutes / 15) * 15;
+    if (rounded < -12 * 60 || rounded > 14 * 60) return empty;
+    return {
+        derivedOffset: minutesToOffset(rounded),
+        clockDriftSeconds: Math.round((deltaMinutes - rounded) * 60),
+    };
+}
+
+// Coordinate sanity flags. Exactly 0,0 ("null island") is a valid point that
+// stays plotted, but it is far more often a receiver default than a real fix,
+// so it is flagged rather than dropped. Out-of-range values cannot be a real
+// WGS84 position at all.
+function coordinateFlags(lat, lon) {
+    const flags = [];
+    if (lat === 0 && lon === 0) flags.push('null-island');
+    if (typeof lat !== 'number' || typeof lon !== 'number' || Number.isNaN(lat) || Number.isNaN(lon)
+        || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+        flags.push('out-of-range');
+    }
+    return flags;
+}
+
+// Marks byte-identical files. Every hashed file (located or not) takes part;
+// the first occurrence in directory order is the original and each later
+// copy gets duplicateOf = that path. Directory order is stable across scans,
+// so the same file is "the original" every time.
+function markDuplicates(entries) {
+    const firstByHash = new Map();
+    let duplicates = 0;
+    for (const entry of entries) {
+        if (!entry || !entry.sha256) continue;
+        const first = firstByHash.get(entry.sha256);
+        if (first) {
+            entry.duplicateOf = first.fullPath;
+            duplicates++;
+        } else {
+            firstByHash.set(entry.sha256, entry);
+        }
+    }
+    return duplicates;
+}
+
 // options.onProgress: called as (processedCount, totalFiles) after every file
 // options.signal: an AbortSignal; aborting stops the scan early and the
 // partial results are returned with stats.aborted = true
@@ -212,8 +342,11 @@ async function scanDirectory(dirPath, options = {}) {
     servableFiles.clear();
 
     // Fill results by index so output keeps directory order no matter
-    // which ExifTool read finishes first
+    // which ExifTool read finishes first. `others` holds every file that is
+    // NOT located evidence (no GPS, or unreadable) so the manifest can list
+    // the whole evidence folder, hashed, rather than only the plotted subset.
     const results = new Array(files.length).fill(null);
+    const others = new Array(files.length).fill(null);
     let nextIndex = 0;
 
     // Completeness counters: an investigator needs to know how much of the
@@ -232,6 +365,12 @@ async function scanDirectory(dirPath, options = {}) {
             const index = nextIndex++;
             const file = files[index];
 
+            // Every file in the folder is hashed, whatever its metadata says:
+            // the manifest must attest to the complete set, and a duplicate
+            // of a located file may well be one that lost its GPS tags.
+            const hash = await hashFile(file.fullPath);
+            if (hash.error) hashFailures++;
+
             try {
                 // Let ExifTool read the file (works for JPG, CR3, MP4, MOV, HEIC, etc.)
                 const tags = await exiftool.read(file.fullPath);
@@ -240,6 +379,7 @@ async function scanDirectory(dirPath, options = {}) {
                 // format) as an Error tag instead of throwing
                 if (tags.Error) {
                     unreadable++;
+                    others[index] = { name: file.name, fullPath: file.fullPath, sha256: hash.sha256, hashError: hash.error, status: 'unreadable' };
 
                 // Check if GPS data exists. 0 is a valid coordinate on the
                 // equator / prime meridian, so only reject missing values
@@ -250,9 +390,9 @@ async function scanDirectory(dirPath, options = {}) {
                     // its timezone is actually known
                     const ts = extractTimestamps(tags);
 
-                    // Reproducible identifier for the file (original bytes)
-                    const hash = await hashFile(file.fullPath);
-                    if (hash.error) hashFailures++;
+                    // GPS receiver time (UTC by definition) as an independent anchor
+                    const gpsUtcTime = extractGpsUtc(tags);
+                    const gpsCompare = compareWithGpsUtc(ts, gpsUtcTime);
 
                     servableFiles.add(file.fullPath);
                     results[index] = {
@@ -263,11 +403,16 @@ async function scanDirectory(dirPath, options = {}) {
                         lat: tags.GPSLatitude,
                         lon: tags.GPSLongitude,
                         alt: typeof tags.GPSAltitude === 'number' ? tags.GPSAltitude : null,
+                        flags: coordinateFlags(tags.GPSLatitude, tags.GPSLongitude),
+                        duplicateOf: null,                   // filled in after the scan
                         time: ts.time,                       // raw string of the timeline field (display + sort)
                         timelineField: ts.timelineField,     // which EXIF field the timeline used
                         timezoneKnown: ts.timezoneKnown,     // false = ambiguous local time, do not assume UTC/local
                         timezoneOffset: ts.timezoneOffset,   // e.g. "+02:00" when known
                         timestamps: ts.timestamps,           // all raw timestamps + offset tags
+                        gpsUtcTime: gpsUtcTime,              // raw GPSDateStamp + GPSTimeStamp (UTC), or null
+                        derivedOffset: gpsCompare.derivedOffset,         // offset implied by GPS UTC; DERIVED, not embedded
+                        clockDriftSeconds: gpsCompare.clockDriftSeconds, // camera clock minus GPS time after the offset
                         camera: tags.Model || tags.Make || "Unknown device",
                         make: tags.Make || null,
                         model: tags.Model || null,
@@ -280,10 +425,12 @@ async function scanDirectory(dirPath, options = {}) {
                     };
                 } else {
                     noLocation++;
+                    others[index] = { name: file.name, fullPath: file.fullPath, sha256: hash.sha256, hashError: hash.error, status: 'no-location' };
                 }
             } catch (err) {
                 // Count files ExifTool can't parse instead of hiding them
                 unreadable++;
+                others[index] = { name: file.name, fullPath: file.fullPath, sha256: hash.sha256, hashError: hash.error, status: 'unreadable' };
             }
 
             processed++;
@@ -298,10 +445,20 @@ async function scanDirectory(dirPath, options = {}) {
     }
     await Promise.all(workers);
 
+    // Duplicate detection across the whole hashed inventory, in directory order
+    const inventory = [];
+    for (let i = 0; i < files.length; i++) inventory.push(results[i] || others[i]);
+    const duplicates = markDuplicates(inventory);
+
     const found = results.filter(Boolean);
+    for (const item of found) {
+        if (item.duplicateOf) item.flags.push('duplicate');
+    }
+    const otherFiles = others.filter(Boolean).map((o) => ({ ...o, duplicateOf: o.duplicateOf || null }));
 
     return {
         results: found,
+        otherFiles: otherFiles,
         stats: {
             totalFiles: files.length,
             processed: processed,
@@ -309,6 +466,8 @@ async function scanDirectory(dirPath, options = {}) {
             noLocation: noLocation,
             unreadable: unreadable,
             hashFailures: hashFailures,
+            duplicates: duplicates,
+            flaggedCoordinates: found.filter((r) => r.flags.some((f) => f !== 'duplicate')).length,
             aborted: !!(signal && signal.aborted)
         }
     };
@@ -334,7 +493,7 @@ function isServableFile(filePath) {
     return servableFiles.has(path.resolve(filePath));
 }
 
-module.exports = { scanDirectory, countFiles, isServableFile, getExiftoolVersion };
+module.exports = { scanDirectory, countFiles, isServableFile, getExiftoolVersion, compareWithGpsUtc, coordinateFlags, markDuplicates, exiftool };
 
 /* Refloow Geo Forensics
  * Copyright (C) 2026  Veljko Vuckovic (Refloow) <legal@refloow.com>

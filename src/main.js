@@ -18,8 +18,10 @@
 const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
+const crypto = require('crypto');
 const { startServer } = require('./src/server.js');
-const { exiftool } = require('exiftool-vendored');
+// The scanner owns the ExifTool process pool; shut down the same instance on quit
+const { exiftool } = require('./src/utils/scanner');
 
 // Prevent automatic downloads
 autoUpdater.autoDownload = false
@@ -71,6 +73,11 @@ function installNetworkGuard() {
 let mainWindow;
 let splashWindow;
 let activePort;
+
+// Per-launch secret required on every local API request. Generated here,
+// configured into the loopback server, and handed only to this app's own
+// renderer (below), so no other process on the machine can call the API.
+const apiToken = crypto.randomBytes(32).toString('hex');
 
 
 // Splash screen
@@ -173,6 +180,14 @@ ipcMain.handle('get-app-version', () => {
     return app.getVersion();
 });
 
+// Synchronous so the preload script can expose the token before any page
+// script runs. Only answered for a frame served by our own loopback server.
+ipcMain.on('get-api-token', (event) => {
+    const url = event.senderFrame ? event.senderFrame.url : '';
+    const ours = activePort && url.startsWith(`http://localhost:${activePort}/`);
+    event.returnValue = ours ? apiToken : null;
+});
+
 // Native OS Folder Picker Handler
 ipcMain.handle('dialog:openDirectory', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -252,7 +267,7 @@ autoUpdater.on('update-downloaded', async () => {
 app.whenReady().then(async () => {
     try {
         installNetworkGuard(); // Arm the air-gap guard before any window can load
-        activePort = await startServer(3000);
+        activePort = await startServer(3000, { apiToken });
         createWindow();
     } catch (error) {
         console.error("Failed to start GeoForensics server:", error);

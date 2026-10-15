@@ -26,10 +26,9 @@ const os = require('node:os');
 
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { exiftool } = require('exiftool-vendored');
-const { scanDirectory, countFiles, isServableFile } = require('../src/utils/scanner');
+const { scanDirectory, countFiles, isServableFile, compareWithGpsUtc, coordinateFlags, markDuplicates, exiftool } = require('../src/utils/scanner');
 const mbtiles = require('../src/utils/mbtiles');
-const { app } = require('../src/server');
+const { app, setApiToken, CONTENT_SECURITY_POLICY } = require('../src/server');
 
 // A 1x1 red PNG used to fill test map tiles
 const RED_PNG = Buffer.from(
@@ -60,6 +59,8 @@ let gpsFile;       // JPEG with GPS + timestamp + device + altitude
 let nestedGpsFile; // JPEG with GPS inside the nested folder
 let equatorFile;   // JPEG at latitude 0 (valid coordinate, must not be dropped)
 let plainFile;     // JPEG with no GPS data
+let dupFile;       // Byte-identical copy of nested.jpg (duplicate detection)
+let originFile;    // JPEG at exactly 0,0 ("null island": valid but flagged)
 let mbtilesDir;    // Temp dir holding the MBTiles fixture (outside the scan)
 let mbtilesPath;   // Valid MBTiles map package
 let server;        // HTTP server bound to an ephemeral port
@@ -83,6 +84,8 @@ before(async () => {
     nestedGpsFile = path.join(subDir, 'nested.jpg');
     equatorFile = path.join(tmpDir, 'equator.jpg');
     plainFile = path.join(tmpDir, 'plain.jpg');
+    dupFile = path.join(tmpDir, 'zz-copy-of-nested.jpg');
+    originFile = path.join(tmpDir, 'origin.jpg');
 
     await writeFixture(gpsFile, {
         GPSLatitude: 44.8125, GPSLongitude: 20.4612,
@@ -95,18 +98,26 @@ before(async () => {
         Make: 'TestMake',
         DateTimeOriginal: '2026:01:15 10:30:00',
         OffsetTimeOriginal: '+01:00',
+        GPSDateStamp: '2026:01:15', GPSTimeStamp: '09:29:30',
         Model: 'TestCam <img src=x onerror=alert(1)>'
     });
     await writeFixture(nestedGpsFile, {
         GPSLatitude: 45.2671, GPSLongitude: 19.8335,
         GPSLatitudeRef: 'N', GPSLongitudeRef: 'E',
-        DateTimeOriginal: '2026:01:16 12:00:00'
+        DateTimeOriginal: '2026:01:16 12:00:00',
+        GPSDateStamp: '2026:01:16', GPSTimeStamp: '10:00:00'
     });
     await writeFixture(equatorFile, {
         GPSLatitude: 0, GPSLongitude: 9.45,
         GPSLatitudeRef: 'N', GPSLongitudeRef: 'E'
     });
     await writeFixture(plainFile, null);
+    await writeFixture(originFile, {
+        GPSLatitude: 0, GPSLongitude: 0,
+        GPSLatitudeRef: 'N', GPSLongitudeRef: 'E'
+    });
+    // Sorts after 'subdir', so nested.jpg is discovered first and is the original
+    fs.copyFileSync(nestedGpsFile, dupFile);
 
     // A text file: readable by ExifTool but carries no location data
     fs.writeFileSync(path.join(tmpDir, 'notes.txt'), 'case notes');
@@ -142,7 +153,7 @@ after(async () => {
 
 test('countFiles walks nested folders and survives symlink loops', async () => {
     const count = await countFiles(tmpDir);
-    assert.equal(count, 5); // 4 jpg + 1 txt, the loop symlink is not a file
+    assert.equal(count, 7); // 6 jpg + 1 txt, the loop symlink is not a file
 });
 
 test('countFiles rejects a path that does not exist', async () => {
@@ -152,14 +163,18 @@ test('countFiles rejects a path that does not exist', async () => {
 test('scanDirectory finds GPS evidence recursively and reports stats', async () => {
     const { results, stats } = await scanDirectory(tmpDir);
 
-    assert.equal(results.length, 3);
+    assert.equal(results.length, 5);
     const names = results.map((r) => r.name).sort();
-    assert.deepEqual(names, ['belgrade.jpg', 'equator.jpg', 'nested.jpg']);
+    assert.deepEqual(names, ['belgrade.jpg', 'equator.jpg', 'nested.jpg', 'origin.jpg', 'zz-copy-of-nested.jpg']);
 
-    assert.equal(stats.totalFiles, 5);
-    assert.equal(stats.withLocation, 3);
+    assert.equal(stats.totalFiles, 7);
+    assert.equal(stats.withLocation, 5);
     assert.equal(stats.noLocation, 2); // plain.jpg + notes.txt
     assert.equal(stats.unreadable, 0);
+
+    // Discovery order is sorted by name, so results are reproducible across machines
+    assert.deepEqual(results.map((r) => r.name),
+        ['belgrade.jpg', 'equator.jpg', 'origin.jpg', 'nested.jpg', 'zz-copy-of-nested.jpg']);
 });
 
 test('scanDirectory keeps latitude 0 (equator is a valid coordinate)', async () => {
@@ -214,8 +229,9 @@ test('POST /api/scan returns evidence and stats', async () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.success, true);
-    assert.equal(body.data.length, 3);
-    assert.equal(body.stats.totalFiles, 5);
+    assert.equal(body.data.length, 5);
+    assert.equal(body.stats.totalFiles, 7);
+    assert.equal(body.otherFiles.length, 2);
 });
 
 test('POST /api/scan rejects an invalid path', async () => {
@@ -237,7 +253,7 @@ test('POST /api/estimate counts files', async () => {
     });
     const body = await res.json();
     assert.equal(body.success, true);
-    assert.equal(body.count, 5);
+    assert.equal(body.count, 7);
 });
 
 test('GET /api/image serves scanned files and nothing else', async () => {
@@ -263,9 +279,9 @@ test('scanDirectory reports progress for every file', async () => {
     const { stats } = await scanDirectory(tmpDir, {
         onProgress: (processed, total) => calls.push([processed, total])
     });
-    assert.equal(calls.length, 5);
-    assert.deepEqual(calls[calls.length - 1], [5, 5]);
-    assert.equal(stats.processed, 5);
+    assert.equal(calls.length, 7);
+    assert.deepEqual(calls[calls.length - 1], [7, 7]);
+    assert.equal(stats.processed, 7);
     assert.equal(stats.aborted, false);
 });
 
@@ -276,7 +292,7 @@ test('scanDirectory stops early when the signal is already aborted', async () =>
     assert.equal(results.length, 0);
     assert.equal(stats.processed, 0);
     assert.equal(stats.aborted, true);
-    assert.equal(stats.totalFiles, 5); // Discovery still ran; examination did not
+    assert.equal(stats.totalFiles, 7); // Discovery still ran; examination did not
 });
 
 test('GET /api/scan-stream emits progress and done events', async () => {
@@ -291,9 +307,10 @@ test('GET /api/scan-stream emits progress and done events', async () => {
     // Parse the payload of the done event
     const doneData = body.split('event: done\n')[1].split('\n')[0].replace('data: ', '');
     const payload = JSON.parse(doneData);
-    assert.equal(payload.data.length, 3);
-    assert.equal(payload.stats.totalFiles, 5);
+    assert.equal(payload.data.length, 5);
+    assert.equal(payload.stats.totalFiles, 7);
     assert.equal(payload.stats.aborted, false);
+    assert.equal(payload.otherFiles.length, 2);
 });
 
 test('GET /api/scan-stream reports an invalid path as a scan-error event', async () => {
@@ -398,7 +415,7 @@ test('mbtiles serves a tile with correct TMS Y-flip and 404s otherwise', () => {
 
 test('mbtiles rejects a missing or non-MBTiles file', () => {
     assert.throws(() => mbtiles.openMbtiles(path.join(tmpDir, 'nope.mbtiles')));
-    const junk = path.join(tmpDir, 'junk.mbtiles');
+    const junk = path.join(mbtilesDir, 'junk.mbtiles'); // outside the evidence folder
     fs.writeFileSync(junk, 'not a database');
     assert.throws(() => mbtiles.openMbtiles(junk));
 });
@@ -443,6 +460,181 @@ test('offline-map import rejects an invalid path', async () => {
     assert.equal(res.status, 400);
     const body = await res.json();
     assert.equal(body.success, false);
+});
+
+// --- Complete inventory: every file is hashed, not only located evidence ---
+
+test('scanDirectory hashes unlocated and unreadable files into otherFiles', async () => {
+    const { otherFiles } = await scanDirectory(tmpDir);
+    assert.equal(otherFiles.length, 2);
+    const plain = otherFiles.find((o) => o.name === 'plain.jpg');
+    const notes = otherFiles.find((o) => o.name === 'notes.txt');
+    assert.equal(plain.status, 'no-location');
+    assert.equal(notes.status, 'no-location');
+    assert.equal(plain.sha256, crypto.createHash('sha256').update(fs.readFileSync(plainFile)).digest('hex'));
+    assert.match(notes.sha256, /^[0-9a-f]{64}$/);
+    assert.equal(plain.hashError, null);
+    // Unlocated files are inventoried but still never served over HTTP
+    assert.equal(isServableFile(plainFile), false);
+});
+
+// --- GPS UTC time as a timezone anchor ---
+
+test('a zone-less timestamp gets a DERIVED offset from GPS UTC, timezoneKnown stays false', async () => {
+    const { results } = await scanDirectory(tmpDir);
+    const nested = results.find((r) => r.name === 'nested.jpg');
+    assert.equal(nested.gpsUtcTime, '2026:01:16 10:00:00');
+    assert.equal(nested.timezoneKnown, false);     // nothing embedded: still unknown
+    assert.equal(nested.timezoneOffset, null);
+    assert.equal(nested.derivedOffset, '+02:00');  // 12:00 local vs 10:00 UTC
+    assert.equal(nested.clockDriftSeconds, 0);
+});
+
+test('an embedded offset is checked against GPS UTC and the clock drift reported', async () => {
+    const { results } = await scanDirectory(tmpDir);
+    const belgrade = results.find((r) => r.name === 'belgrade.jpg');
+    assert.equal(belgrade.gpsUtcTime, '2026:01:15 09:29:30');
+    assert.equal(belgrade.timezoneKnown, true);
+    assert.equal(belgrade.derivedOffset, null);    // nothing to derive: the offset is embedded
+    assert.equal(belgrade.clockDriftSeconds, 30);  // camera 30 s ahead of GPS time
+});
+
+test('files without GPS time report no anchor, no derived offset and no drift', async () => {
+    const { results } = await scanDirectory(tmpDir);
+    const equator = results.find((r) => r.name === 'equator.jpg');
+    assert.equal(equator.gpsUtcTime, null);
+    assert.equal(equator.derivedOffset, null);
+    assert.equal(equator.clockDriftSeconds, null);
+});
+
+test('compareWithGpsUtc rounds to quarter hours and refuses implausible offsets', () => {
+    const ts = (time, known, offset) => ({ time, timezoneKnown: known, timezoneOffset: offset });
+    // 5:30 ahead (India), camera 20 s fast
+    assert.deepEqual(compareWithGpsUtc(ts('2026:03:01 15:30:20', false, null), '2026:03:01 10:00:00'),
+        { derivedOffset: '+05:30', clockDriftSeconds: 20 });
+    // Negative offset across midnight
+    assert.deepEqual(compareWithGpsUtc(ts('2026:03:01 20:00:00', false, null), '2026:03:02 03:00:00'),
+        { derivedOffset: '-07:00', clockDriftSeconds: 0 });
+    // A 3-day gap is not a timezone: nothing is derived
+    assert.deepEqual(compareWithGpsUtc(ts('2026:03:04 10:00:00', false, null), '2026:03:01 10:00:00'),
+        { derivedOffset: null, clockDriftSeconds: null });
+    // Unknown time: nothing
+    assert.deepEqual(compareWithGpsUtc(ts('Unknown Time', false, null), '2026:03:01 10:00:00'),
+        { derivedOffset: null, clockDriftSeconds: null });
+});
+
+// --- Coordinate sanity flags ---
+
+test('scanDirectory keeps 0,0 plotted but flags it as null-island', async () => {
+    const { results, stats } = await scanDirectory(tmpDir);
+    const origin = results.find((r) => r.name === 'origin.jpg');
+    assert.ok(origin, 'origin file missing from results');
+    assert.equal(origin.lat, 0);
+    assert.equal(origin.lon, 0);
+    assert.deepEqual(origin.flags, ['null-island']);
+    // Latitude 0 alone (equator) is NOT null island
+    const equator = results.find((r) => r.name === 'equator.jpg');
+    assert.deepEqual(equator.flags, []);
+    assert.equal(stats.flaggedCoordinates, 1);
+});
+
+test('coordinateFlags marks out-of-range positions', () => {
+    assert.deepEqual(coordinateFlags(91, 0), ['out-of-range']);
+    assert.deepEqual(coordinateFlags(0, -180.5), ['out-of-range']);
+    assert.deepEqual(coordinateFlags(NaN, 10), ['out-of-range']);
+    assert.deepEqual(coordinateFlags(-90, 180), []);
+    assert.deepEqual(coordinateFlags(0, 0), ['null-island']);
+});
+
+// --- Duplicate detection ---
+
+test('scanDirectory marks byte-identical files as duplicates of the first occurrence', async () => {
+    const { results, stats } = await scanDirectory(tmpDir);
+    const nested = results.find((r) => r.name === 'nested.jpg');
+    const copy = results.find((r) => r.name === 'zz-copy-of-nested.jpg');
+    assert.equal(nested.sha256, copy.sha256);
+    assert.equal(nested.duplicateOf, null);          // discovered first: the original
+    assert.equal(copy.duplicateOf, nestedGpsFile);   // points at the original's path
+    assert.deepEqual(copy.flags, ['duplicate']);
+    assert.equal(stats.duplicates, 1);
+});
+
+test('markDuplicates spans located and unlocated files and skips unhashed ones', () => {
+    const entries = [
+        { fullPath: '/a', sha256: 'h1' },
+        { fullPath: '/b', sha256: 'h2' },
+        { fullPath: '/c', sha256: 'h1' },
+        { fullPath: '/d', sha256: null },
+        { fullPath: '/e', sha256: 'h1' },
+    ];
+    assert.equal(markDuplicates(entries), 2);
+    assert.equal(entries[2].duplicateOf, '/a');
+    assert.equal(entries[4].duplicateOf, '/a');
+    assert.equal(entries[1].duplicateOf, undefined);
+    assert.equal(entries[3].duplicateOf, undefined);
+});
+
+// --- Local API token and security headers ---
+
+test('every response carries the CSP and hardening headers', async () => {
+    const page = await fetch(`${baseUrl}/`);
+    assert.equal(page.headers.get('content-security-policy'), CONTENT_SECURITY_POLICY);
+    assert.match(CONTENT_SECURITY_POLICY, /default-src 'self'/);
+    assert.match(CONTENT_SECURITY_POLICY, /connect-src 'self'/);
+    assert.match(CONTENT_SECURITY_POLICY, /object-src 'none'/);
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    const api = await fetch(`${baseUrl}/api/versions`);
+    assert.equal(api.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('with a token configured, /api requires it as a bearer header or ?token=', async () => {
+    setApiToken('test-secret-token');
+    try {
+        // No credential -> 401, and no data
+        const denied = await fetch(`${baseUrl}/api/versions`);
+        assert.equal(denied.status, 401);
+        assert.equal((await denied.json()).success, false);
+
+        // Wrong credential -> 401
+        const wrong = await fetch(`${baseUrl}/api/versions`, { headers: { Authorization: 'Bearer nope' } });
+        assert.equal(wrong.status, 401);
+        const wrongQuery = await fetch(`${baseUrl}/api/versions?token=nope`);
+        assert.equal(wrongQuery.status, 401);
+
+        // Bearer header -> 200
+        const ok = await fetch(`${baseUrl}/api/versions`, { headers: { Authorization: 'Bearer test-secret-token' } });
+        assert.equal(ok.status, 200);
+
+        // Query form (what <img>, EventSource and tile layers use) -> 200
+        const okQuery = await fetch(`${baseUrl}/api/versions?token=test-secret-token`);
+        assert.equal(okQuery.status, 200);
+
+        // Evidence endpoints are covered too, including the estimate route
+        const scan = await fetch(`${baseUrl}/api/scan`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: tmpDir })
+        });
+        assert.equal(scan.status, 401);
+        const image = await fetch(`${baseUrl}/api/image?path=${encodeURIComponent(gpsFile)}`);
+        assert.equal(image.status, 401);
+        const estimate = await fetch(`${baseUrl}/api/estimate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath: tmpDir })
+        });
+        assert.equal(estimate.status, 401);
+        const stream = await fetch(`${baseUrl}/api/scan-stream?path=${encodeURIComponent(tmpDir)}&id=tok`);
+        assert.equal(stream.status, 401);
+
+        // The UI itself (static files) needs no token
+        const index = await fetch(`${baseUrl}/`);
+        assert.equal(index.status, 200);
+    } finally {
+        setApiToken(null);
+    }
+    // Back to the development default: open on loopback
+    const open = await fetch(`${baseUrl}/api/versions`);
+    assert.equal(open.status, 200);
 });
 
 // --- Air-gap network safety (server layer) ---
